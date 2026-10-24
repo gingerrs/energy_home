@@ -1,0 +1,10 @@
+pyproject.toml
+src/energyhome/__init__.py
+src/energyhome/__main__.py
+src/energyhome/cli.py
+src/energyhome.egg-info/PKG-INFO
+src/energyhome.egg-info/SOURCES.txt
+src/energyhome.egg-info/dependency_links.txt
+src/energyhome.egg-info/entry_points.txt
+src/energyhome.egg-info/top_level.txt
+tests/test_cli.py
