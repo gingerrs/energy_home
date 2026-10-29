@@ -20,9 +20,9 @@ class ReportSummary:
     cost_uah: Decimal
 
 
-def build_demo1_summary(profile: LoadProfile, tariff: Tariff) -> ReportSummary:
+def build_demo1_summary(profile: LoadProfile | None, tariff: Tariff) -> ReportSummary:
     """Build a summary from domain boundaries and the cost returned by core."""
-    interval_count = len(profile)
+    interval_count = len(profile) if profile is not None else 0
     if interval_count == 0:
         return ReportSummary(None, None, 0, 0.0, Decimal("0.00"))
 

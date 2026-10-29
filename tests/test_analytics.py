@@ -200,3 +200,10 @@ class TestAnalytics(unittest.TestCase):
 
         self.assertIn("Вартість: 2.50 UAH", report)
         self.calculate_cost.assert_not_called()
+
+    def test_none_from_empty_csv_is_an_empty_summary(self):
+        summary = build_demo1_summary(None, self.tariff)
+
+        self.assertEqual(summary, ReportSummary(None, None, 0, 0.0, Decimal("0.00")))
+        self.assertIn("немає даних", format_console_report(summary))
+        self.calculate_cost.assert_not_called()

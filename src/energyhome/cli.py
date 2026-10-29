@@ -30,6 +30,19 @@ def build_parser()->argparse.ArgumentParser:
     )
     return parser
 
+def _render_report(input_path: Path, tariff_id: str, rate: float) -> str:
+    from .analytics import build_demo1_summary, format_console_report
+    from .dataio import load_demo_profile
+    from .domain import EnergyError as DomainError, SingleZoneTariff
+
+    try:
+        profile = load_demo_profile(input_path)
+        tariff = SingleZoneTariff(tariff_id, tariff_id, "Europe/Kyiv", rate)
+        return format_console_report(build_demo1_summary(profile, tariff))
+    except DomainError as error:
+        raise EnergyError(str(error)) from error
+
+
 def command_report(args: argparse.Namespace)-> int:
     """
     Executes the report generation command
@@ -53,8 +66,14 @@ def command_report(args: argparse.Namespace)-> int:
             
         rate = tariffs[args.tariff]["rate"]
 
-        print(f"Report: 1.0 kWh/{rate:.2f} UAH")
+        print(_render_report(input_path, args.tariff, rate))
         return 0
+
+    except ModuleNotFoundError as e:
+        if e.name not in {"energyhome.domain", "energyhome.dataio", "energyhome.core"}:
+            raise
+        sys.stderr.write(f"Error: Required EnergyHome component is unavailable: {e.name}\n")
+        return 1
 
     except EnergyError as e:
         sys.stderr.write(f"Error: {str(e)}\n")
