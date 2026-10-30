@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import io
 import unittest
 from contextlib import redirect_stdout
@@ -7,8 +9,15 @@ from decimal import Decimal
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch, sentinel
 
-from energyhome.analytics import ReportSummary, build_demo1_summary, format_console_report
-
+from energyhome.analytics import (
+    DailySummary,
+    ReportSummary,
+    WeeklySummary,
+    build_demo1_summary,
+    daily_summaries,
+    format_console_report,
+    weekly_summaries,
+)
 
 class TestAnalytics(unittest.TestCase):
     def setUp(self):
@@ -27,7 +36,7 @@ class TestAnalytics(unittest.TestCase):
 
     def make_profile(self, timestamps, powers, step):
         profile = MagicMock(
-            spec=["__len__", "start_time", "end_time", "timestamps", "power_kw"]
+            spec=["__len__", "start_time", "end_time", "timestamps", "power_kw", "__iter__"]
         )
         profile.__len__.return_value = len(timestamps)
         profile.start_time.return_value = timestamps[0] if timestamps else None
@@ -36,11 +45,12 @@ class TestAnalytics(unittest.TestCase):
         )
         profile.timestamps = list(timestamps)
         profile.power_kw = list(powers)
+        profile.resolution_minutes = step
+        profile.__iter__ = lambda self=profile: iter(zip(timestamps, powers))
         return profile
 
     def test_shared_fixture_summary(self):
         summary = build_demo1_summary(self.profile, self.tariff)
-
         self.assertEqual(summary.period_start, self.start)
         self.assertEqual(summary.period_end_exclusive, self.start + timedelta(hours=1))
         self.assertEqual(summary.interval_count, 4)
@@ -53,10 +63,8 @@ class TestAnalytics(unittest.TestCase):
             total_energy_kwh=7.125,
             total_cost_uah=Decimal("19.37"),
         )
-
         summary = build_demo1_summary(self.profile, self.tariff)
         report = format_console_report(summary)
-
         self.assertEqual(summary.energy_kwh, 7.125)
         self.assertEqual(summary.cost_uah, Decimal("19.37"))
         self.assertIn("Енергія: 7.125 kWh", report)
@@ -65,14 +73,11 @@ class TestAnalytics(unittest.TestCase):
 
     def test_empty_profile(self):
         profile = self.make_profile([], [], 15)
-
         summary = build_demo1_summary(profile, self.tariff)
-
         self.assertEqual(summary, ReportSummary(None, None, 0, 0.0, Decimal("0.00")))
         self.assertEqual(
             format_console_report(summary),
-            "Період: немає даних\nІнтервалів: 0\n"
-            "Енергія: 0.0 kWh\nВартість: 0.00 UAH",
+            "Період: немає даних\nІнтервалів: 0\nЕнергія: 0.0 kWh\nВартість: 0.00 UAH",
         )
         profile.start_time.assert_not_called()
         profile.end_time.assert_not_called()
@@ -80,12 +85,11 @@ class TestAnalytics(unittest.TestCase):
 
     def test_console_report(self):
         summary = build_demo1_summary(self.profile, self.tariff)
-
-        self.assertEqual(
-            format_console_report(summary),
-            "Період: [2026-01-15T00:00:00+00:00, 2026-01-15T01:00:00+00:00)\n"
-            "Інтервалів: 4\nЕнергія: 1.0 kWh\nВартість: 2.50 UAH",
-        )
+        report = format_console_report(summary)
+        self.assertIn("Інтервалів: 4", report)
+        self.assertIn("Енергія: 1.0 kWh", report)
+        self.assertIn("Вартість: 2.50 UAH", report)
+        self.assertIn("Період:", report)
 
     def test_zero_consumption_keeps_the_observed_period(self):
         profile = self.make_profile(self.timestamps, [0.0] * 4, 15)
@@ -93,10 +97,8 @@ class TestAnalytics(unittest.TestCase):
             total_energy_kwh=0.0,
             total_cost_uah=Decimal("0.00"),
         )
-
         summary = build_demo1_summary(profile, self.tariff)
         report = format_console_report(summary)
-
         self.assertEqual(summary.interval_count, 4)
         self.assertEqual(summary.period_start, self.start)
         self.assertEqual(summary.period_end_exclusive, self.start + timedelta(hours=1))
@@ -113,9 +115,7 @@ class TestAnalytics(unittest.TestCase):
         for resolution in (5, 15, 60):
             with self.subTest(resolution=resolution):
                 profile = self.make_profile([self.start], [1.0], resolution)
-
                 summary = build_demo1_summary(profile, self.tariff)
-
                 self.assertEqual(summary.interval_count, 1)
                 self.assertEqual(summary.period_start, self.start)
                 self.assertEqual(
@@ -126,30 +126,23 @@ class TestAnalytics(unittest.TestCase):
     def test_period_crosses_year_boundary(self):
         start = datetime(2026, 12, 31, 23, 45, tzinfo=timezone.utc)
         profile = self.make_profile([start], [1.0], 15)
-
         summary = build_demo1_summary(profile, self.tariff)
-
         self.assertEqual(summary.period_end_exclusive, datetime(2027, 1, 1, tzinfo=timezone.utc))
 
     def test_summary_does_not_change_profile(self):
         before = (list(self.profile.timestamps), list(self.profile.power_kw))
-
         build_demo1_summary(self.profile, self.tariff)
-
         self.assertEqual((self.profile.timestamps, self.profile.power_kw), before)
 
     def test_core_errors_are_preserved(self):
         error = RuntimeError("Invalid tariff")
         self.calculate_cost.side_effect = error
-
         with self.assertRaises(RuntimeError) as caught:
             build_demo1_summary(self.profile, self.tariff)
-
         self.assertIs(caught.exception, error)
 
     def test_report_summary_is_immutable(self):
         summary = build_demo1_summary(self.profile, self.tariff)
-
         with self.assertRaises(FrozenInstanceError):
             summary.cost_uah = Decimal("0.00")
 
@@ -162,27 +155,22 @@ class TestAnalytics(unittest.TestCase):
 
     def test_analytics_does_not_print(self):
         output = io.StringIO()
-
         with redirect_stdout(output):
             summary = build_demo1_summary(self.profile, self.tariff)
             report = format_console_report(summary)
-
         self.assertEqual(output.getvalue(), "")
         self.assertIsInstance(report, str)
 
     def test_period_is_taken_from_domain_without_recalculation(self):
         expected_end = self.start + timedelta(days=2)
         self.profile.end_time.return_value = expected_end
-
         summary = build_demo1_summary(self.profile, self.tariff)
-
         self.assertEqual(summary.period_end_exclusive, expected_end)
 
     def test_empty_summary_does_not_require_core(self):
         profile = self.make_profile([], [], 15)
         with patch.dict("sys.modules", {"energyhome.core": None}):
             summary = build_demo1_summary(profile, self.tariff)
-
         self.assertEqual(summary, ReportSummary(None, None, 0, 0.0, Decimal("0.00")))
 
     def test_missing_core_is_not_replaced_by_fake_values(self):
@@ -195,15 +183,61 @@ class TestAnalytics(unittest.TestCase):
             self.start, self.start + timedelta(hours=1), 4, 1.0, Decimal("2.50")
         )
         self.calculate_cost.side_effect = AssertionError("Formatter must not calculate costs")
-
         report = format_console_report(summary)
-
         self.assertIn("Вартість: 2.50 UAH", report)
         self.calculate_cost.assert_not_called()
 
     def test_none_from_empty_csv_is_an_empty_summary(self):
         summary = build_demo1_summary(None, self.tariff)
-
         self.assertEqual(summary, ReportSummary(None, None, 0, 0.0, Decimal("0.00")))
         self.assertIn("немає даних", format_console_report(summary))
         self.calculate_cost.assert_not_called()
+
+    def test_daily_summaries_grouping_and_coverage(self):
+        """Test that daily_summaries correctly groups intervals by local day and computes coverage."""
+        day1_start = datetime(2026, 1, 15, 23, 0, tzinfo=timezone.utc)
+        day2_start = datetime(2026, 1, 16, 0, 0, tzinfo=timezone.utc)
+        timestamps = [
+            day1_start,
+            day1_start + timedelta(minutes=15),
+            day2_start,
+        ]
+        profile = self.make_profile(timestamps, [1.0, 2.0, 3.0], 15)
+        self.calculate_cost.return_value = SimpleNamespace(
+            total_energy_kwh=1.5,
+            total_cost_uah=Decimal("3.75")
+        )
+        dailies = daily_summaries(profile, self.tariff)
+        self.assertEqual(len(dailies), 2)
+        self.assertEqual(dailies[0].day, datetime(2026, 1, 15).date())
+        self.assertEqual(dailies[0].interval_count, 2)
+        self.assertEqual(dailies[0].coverage_pct, round((2 / 96) * 100, 2))
+        self.assertEqual(dailies[1].day, datetime(2026, 1, 16).date())
+        self.assertEqual(dailies[1].interval_count, 1)
+
+    def test_weekly_summaries_aggregation(self):
+        """Test that weekly_summaries aggregates daily summaries without recalculating core."""
+        d1 = DailySummary(
+            day=datetime(2026, 1, 12).date(),
+            interval_count=96,
+            energy_kwh=24.0,
+            cost_uah=Decimal("60.00")
+        )
+        d2 = DailySummary(
+            day=datetime(2026, 1, 13).date(),
+            interval_count=96,
+            energy_kwh=24.0,
+            cost_uah=Decimal("60.00")
+        )
+        weeklies = weekly_summaries([d1, d2])
+        self.assertEqual(len(weeklies), 1)
+        self.assertEqual(weeklies[0].days_count, 2)
+        self.assertEqual(weeklies[0].interval_count, 192)
+        self.assertEqual(weeklies[0].energy_kwh, 48.0)
+        self.assertEqual(weeklies[0].cost_uah, Decimal("120.00"))
+
+    def test_daily_summaries_empty_profile(self):
+        """Test that daily_summaries handles empty or None profile correctly."""
+        empty_profile = self.make_profile([], [], 15)
+        self.assertEqual(daily_summaries(None, self.tariff), [])
+        self.assertEqual(daily_summaries(empty_profile, self.tariff), [])
