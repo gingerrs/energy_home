@@ -1,42 +1,23 @@
 import csv
-from collections.abc import Iterator
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from random import Random
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-try:
-    from energyhome.domain import EnergyError, LoadProfile, MeterReading  # type: ignore[import-not-found]
-except (ImportError, ModuleNotFoundError):
-
-    class EnergyError(Exception):
-        """Базовий виняток проєкту."""
-
-    @dataclass(frozen=True)
-    class MeterReading:
-        timestamp: datetime
-        power_kw: float
-
-    @dataclass(frozen=True)
-    class LoadProfile:
-        timestamps: list[datetime]
-        power_kw: list[float]
-        resolution_minutes: int
-
-        def __len__(self) -> int:
-            return len(self.timestamps)
-
-        def energy_kwh(self) -> float:
-            return sum(self.power_kw) * (self.resolution_minutes / 60.0)
+from energyhome.domain import (
+    CyclicDevice, EnergyError, FixedDevice, LoadProfile, MeterDataError, MeterReading,
+)
 
 
 class DataImporterError(EnergyError):
-    """Помилка імпорту або валідації вхідних даних CSV у strict mode."""
+    """Помилка імпорту або валідації вхідних даних джерела."""
 
 
 @dataclass(frozen=True)
 class SourceConfig:
-    # Конфігурація параметрів джерела CSV.
+    """Параметри CSV та часової сітки джерела."""
 
     delimiter: str = ","
     timestamp_format: str = "%Y-%m-%dT%H:%M:%S"
@@ -44,8 +25,78 @@ class SourceConfig:
     step_minutes: int = 15
 
 
+@dataclass(frozen=True)
+class RejectRecord:
+    """Номер рядка, причина та початкове значення проблемного запису."""
+
+    line: int
+    reason: str
+    value: object
+
+
+@dataclass
+class QualityReport:
+    """Журнал якості та стан перевірки, спільний для послідовних чанків."""
+
+    rejects: list[RejectRecord] = field(default_factory=list)
+    gaps: list[RejectRecord] = field(default_factory=list)
+    last_timestamp: datetime | None = None
+    line: int = 1
+
+
+def clean_readings(
+    readings: Iterable[MeterReading | RejectRecord], step_minutes: int = 15,
+    mode: str = 'strict', report: QualityReport | None = None,
+) -> Iterator[MeterReading]:
+    """Перевіряє записи по черзі; reject пропускає помилки без заповнення прогалин."""
+    if mode not in ('strict', 'reject'):
+        raise DataImporterError('Mode must be strict or reject')
+    if mode == 'reject' and report is None:
+        raise DataImporterError('Reject mode requires a QualityReport')
+    if type(step_minutes) is not int or step_minutes <= 0:
+        raise DataImporterError('Step must be a positive integer')
+    report = report if report is not None else QualityReport()
+    step = timedelta(minutes=step_minutes)
+    for reading in readings:
+        report.line += 1
+        record = reading if isinstance(reading, RejectRecord) else None
+        if record is None:
+            try:
+                point = LoadProfile([reading.timestamp], [reading.power_kw], step_minutes)
+                timestamp = point.start_time()
+                delta = timestamp - report.last_timestamp if report.last_timestamp else step
+                if delta <= timedelta(0) or delta % step:
+                    raise MeterDataError('Duplicate, out-of-order or off-grid timestamp')
+            except MeterDataError as error:
+                record = RejectRecord(report.line, str(error), reading)
+        if record is not None:
+            report.rejects.append(record)
+            if mode == 'strict':
+                raise DataImporterError(f'Рядок {record.line}: {record.reason}')
+            continue
+        if delta > step:
+            gap = RejectRecord(report.line, 'Missing intervals',
+                               (report.last_timestamp + step, timestamp))
+            report.gaps.append(gap)
+            if mode == 'strict':
+                raise DataImporterError(f'Рядок {gap.line}: {gap.reason}')
+        report.last_timestamp = timestamp
+        yield MeterReading(timestamp, point.power_kw[0])
+
+
+def validate_readings(
+    readings: Iterable[MeterReading | RejectRecord], step_minutes: int = 15,
+    report: QualityReport | None = None,
+) -> QualityReport:
+    """Переглядає весь ряд та повертає журнал без зупинки на поганому записі."""
+    report = report if report is not None else QualityReport()
+    for _ in clean_readings(readings, step_minutes, 'reject', report):
+        pass
+    return report
+
+
 def parse_timestamp(value: str, fmt: str, tz_name: str) -> datetime:
-    # Парсить часову мітку та повертає aware datetime в UTC."
+    """Перетворює часову мітку джерела на datetime із часовим поясом UTC."""
     val_clean = value.strip()
     if val_clean.endswith("Z"):
         try:
@@ -71,49 +122,48 @@ def parse_timestamp(value: str, fmt: str, tz_name: str) -> datetime:
 def iter_meter_csv(
     path: Path | str,
     source_config: SourceConfig | None = None,
+    mode: str = 'strict',
+    report: QualityReport | None = None,
 ) -> Iterator[MeterReading]:
-    """
-    Потоковий ітератор MeterReading із перевіркою кожного рядка.
-    Strict mode будь-яка невідповідність викликає DataImporterError із номером рядка.
-    """
+    """Читає CSV потоково та передає записи спільній перевірці strict/reject."""
     cfg = source_config or SourceConfig()
+    if mode == 'reject' and report is None:
+        raise DataImporterError('Reject mode requires a QualityReport')
+    report = report if report is not None else QualityReport()
+    rows = _iter_meter_rows(path, cfg, report)
+    yield from clean_readings(rows, cfg.step_minutes, mode, report)
+
+
+def _iter_meter_rows(
+    path: Path | str, cfg: SourceConfig, report: QualityReport,
+) -> Iterator[MeterReading | RejectRecord]:
+    """Читає сирі рядки, зберігаючи фізичні номери та помилки перетворення."""
     file_path = Path(path)
     if not file_path.is_file():
         raise DataImporterError(f"Файл не знайдено за шляхом: {file_path}")
 
     with file_path.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f, delimiter=cfg.delimiter)
-        if reader.fieldnames is None:
-            raise DataImporterError("Рядок 1: порожній заголовок CSV")
-        if "timestamp" not in reader.fieldnames or "power_kw" not in reader.fieldnames:
-            raise DataImporterError(
-                "Рядок 1: відсутні обов'язкові колонки timestamp/power_kw"
-            )
-
-        for line_no, row in enumerate(reader, start=2):
-            raw_ts = row.get("timestamp")
-            raw_p = row.get("power_kw")
-            if raw_ts is None or raw_p is None:
-                raise DataImporterError(f"Рядок {line_no}: відсутнє обов'язкове поле")
-
-            try:
-                ts = parse_timestamp(raw_ts, cfg.timestamp_format, cfg.timezone)
-            except ValueError as err:
-                raise DataImporterError(
-                    f"Рядок {line_no}: помилка дати: {err}"
-                ) from err
-
-            try:
-                power = float(raw_p.strip())
-            except (ValueError, TypeError) as err:
-                raise DataImporterError(
-                    f"Рядок {line_no}: некоректне число power_kw"
-                ) from err
-
-            if power < 0:
-                raise DataImporterError(f"Рядок {line_no}: від'ємна потужність {power}")
-
-            yield MeterReading(timestamp=ts, power_kw=power)
+        reader = csv.DictReader(f, delimiter=cfg.delimiter, strict=True)
+        try:
+            if reader.fieldnames is None:
+                raise DataImporterError("Рядок 1: порожній заголовок CSV")
+            if len(set(reader.fieldnames)) != len(reader.fieldnames):
+                raise DataImporterError('Рядок 1: повторювані назви колонок')
+            if "timestamp" not in reader.fieldnames or "power_kw" not in reader.fieldnames:
+                raise DataImporterError("Рядок 1: відсутні колонки timestamp/power_kw")
+            for row in reader:
+                report.line = reader.line_num - 1
+                try:
+                    if None in row or row.get('timestamp') is None or row.get('power_kw') is None:
+                        raise ValueError('Missing field or extra CSV value')
+                    ts = parse_timestamp(row['timestamp'], cfg.timestamp_format, cfg.timezone)
+                    reading = MeterReading(ts, float(row['power_kw']))
+                except (ValueError, TypeError) as error:
+                    reading = RejectRecord(reader.line_num, str(error), dict(row))
+                yield reading
+        except csv.Error as error:
+            message = f'Рядок {reader.reader.line_num}: Invalid CSV: {error}'
+            raise DataImporterError(message) from error
 
 
 def load_demo_profile(
@@ -136,3 +186,23 @@ def load_demo_profile(
         power_kw=powers,
         resolution_minutes=cfg.step_minutes,
     )
+
+
+def generate_demo_consumption(
+    seed: int = 0,
+) -> tuple[LoadProfile, tuple[tuple[datetime, str, str], ...]]:
+    """Повертає чотири години base + cycle + noise та точні мітки on/off."""
+    if type(seed) is not int:
+        raise DataImporterError('Seed must be an integer')
+    rng = Random(seed)
+    start = datetime(2026, 1, 15, tzinfo=UTC)
+    period = (start, start + timedelta(hours=4))
+    base = FixedDevice('base', 0.25).profile_for(period, 15)
+    device = CyclicDevice('heater', 1.5, 60, start_minute=60)
+    cycle = device.profile_for(period, 15)
+    powers = [round(a + b + rng.uniform(-0.02, 0.02), 6)
+              for a, b in zip(base.power_kw, cycle.power_kw)]
+    labels = tuple((start + timedelta(minutes=minute), device.device_id, event)
+                   for minute, event in ((device.start_minute, 'on'),
+                                         (device.start_minute + device.cycle_minutes, 'off')))
+    return LoadProfile(base.timestamps, powers, 15), labels
