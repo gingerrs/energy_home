@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime
+from math import isfinite
 
 @dataclass(frozen=True)
 class CostBreakdown:
@@ -44,7 +45,7 @@ def calculate_cost(profile, tariff) -> CostBreakdown:
 class Event:
     timestamp: datetime
     device_id: str
-    event_type: str  # "on" або "off"
+    event_type: str
 
 def detect_events(
     profile,
@@ -52,6 +53,9 @@ def detect_events(
     off_threshold: float,
     label: str = "device",
 ) -> tuple[Event, ...]:
+    if any(isinstance(value, bool) or not isinstance(value, (int, float))
+           or not isfinite(value) for value in (on_threshold, off_threshold)):
+        raise ValueError("Thresholds must be finite numbers")
     if on_threshold <= off_threshold:
         raise ValueError(
             f"Некоректні пороги: on_threshold ({on_threshold}) "
