@@ -131,3 +131,103 @@ class SingleZoneTariff(Tariff):
     def zone_at(self, timestamp):
         self.rate_at(timestamp)
         return 'single'
+
+
+# W2-A
+class ValidationError(DeviceError):
+    pass
+
+
+def _check_id(value: object, what: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValidationError(f'{what} id must not be empty')
+    return value
+
+
+def _check_positive(value: float, what: str,
+                    allow_zero: bool = False) -> float:
+    is_number = isinstance(value, (int, float)) and not isinstance(value, bool)
+    if not is_number or not isfinite(value) or value < 0 \
+            or (value == 0 and not allow_zero):
+        raise ValidationError(f'{what} must be a positive finite number')
+    return float(value)
+
+
+class EnergyMeter:
+    """Grid connection point of a house with a power limit."""
+
+    def __init__(self, meter_id: str, max_power_kw: float) -> None:
+        self.meter_id = _check_id(meter_id, 'Meter')
+        self.max_power_kw = _check_positive(max_power_kw, 'Power limit')
+
+
+class Device(ABC):
+    shiftable = False
+
+    def __init__(self, device_id: str, power_kw: float) -> None:
+        self.device_id = _check_id(device_id, 'Device')
+        self.power_kw = _check_positive(power_kw, 'Power', allow_zero=True)
+
+    @abstractmethod
+    def is_on(self, minute: int) -> bool:
+        pass
+
+    def profile_for(self, period: tuple[datetime, datetime],
+                    step_minutes: int) -> LoadProfile:
+        start, end = period
+        if type(step_minutes) is not int or step_minutes <= 0:
+            raise ValidationError('Step must be a positive integer')
+        steps = int((end - start) / timedelta(minutes=step_minutes))
+        if steps <= 0:
+            raise ValidationError('Period must contain at least one step')
+        minutes = [i * step_minutes for i in range(steps)]
+        return LoadProfile(
+            [start + timedelta(minutes=m) for m in minutes],
+            [self.power_kw if self.is_on(m) else 0.0 for m in minutes],
+            step_minutes)
+
+
+class FixedDevice(Device):
+    def is_on(self, minute: int) -> bool:
+        return True
+
+
+class CyclicDevice(Device):
+    shiftable = True
+
+    def __init__(self, device_id: str, power_kw: float, cycle_minutes: int,
+                 start_minute: int = 0) -> None:
+        super().__init__(device_id, power_kw)
+        self.cycle_minutes = int(_check_positive(cycle_minutes, 'Cycle'))
+        self.start_minute = int(
+            _check_positive(start_minute, 'Start', allow_zero=True))
+
+    def is_on(self, minute: int) -> bool:
+        end = self.start_minute + self.cycle_minutes
+        return self.start_minute <= minute < end
+
+
+class ThermostaticDevice(Device):
+    def __init__(self, device_id: str, power_kw: float, duty_cycle: float,
+                 cycle_minutes: int = 60) -> None:
+        super().__init__(device_id, power_kw)
+        if isinstance(duty_cycle, bool) or not isinstance(
+                duty_cycle, (int, float)) or not 0 <= duty_cycle <= 1:
+            raise ValidationError('Duty cycle must be in [0, 1]')
+        self.duty_cycle = float(duty_cycle)
+        self.cycle_minutes = int(_check_positive(cycle_minutes, 'Cycle'))
+
+    def is_on(self, minute: int) -> bool:
+        on_minutes = self.duty_cycle * self.cycle_minutes
+        return minute % self.cycle_minutes < on_minutes
+
+
+class House:
+    def __init__(self, house_id: str, meter: EnergyMeter,
+                 devices: list[Device] | None = None) -> None:
+        self.house_id = _check_id(house_id, 'House')
+        self.meter = meter
+        self.devices = list(devices or [])
+        ids = [d.device_id for d in self.devices]
+        if len(ids) != len(set(ids)):
+            raise ValidationError('Device ids must be unique')
