@@ -1,6 +1,6 @@
 import unittest
 from datetime import datetime, timedelta
-from energyhome.core import calculate_cost, CostBreakdown
+from energyhome.core import calculate_cost, CostBreakdown, detect_events
 
 class DummyLoadProfile:
     def __init__(self, timestamps, power_kw, resolution_minutes=60):
@@ -60,6 +60,63 @@ class TestCoreCostCalculation(unittest.TestCase):
         tariff = DummySingleZoneTariff(rate=4.321)
         result = calculate_cost(profile, tariff)
         self.assertEqual(result.total_cost, 4.32)
+
+class TestDetectEventsW2(unittest.TestCase):
+    def setUp(self) -> None:
+        self.on_thresh = 0.8
+        self.off_thresh = 0.2
+        self.device_label = "kettle"
+        self.base_time = datetime(2026, 10, 5, 0, 0)
+
+    def _make_profile(self, values: list[float]) -> list[tuple[datetime, float]]:
+        return [
+            (self.base_time + timedelta(minutes=15 * i), val)
+            for i, val in enumerate(values)
+        ]
+
+    def test_profile_00110_single_on_and_off(self) -> None:
+        profile = self._make_profile([0.0, 0.0, 1.0, 1.0, 0.0])
+        events = detect_events(
+            profile,
+            on_threshold=self.on_thresh,
+            off_threshold=self.off_thresh,
+            label=self.device_label,
+        )
+
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0].event_type, "on")
+        self.assertEqual(events[0].timestamp, profile[2][0])
+        self.assertEqual(events[0].device_id, self.device_label)
+
+        self.assertEqual(events[1].event_type, "off")
+        self.assertEqual(events[1].timestamp, profile[4][0])
+
+    def test_steady_zero_and_empty_profile(self) -> None:
+        self.assertEqual(detect_events([], self.on_thresh, self.off_thresh), ())
+
+        zeros = self._make_profile([0.0, 0.0, 0.0])
+        self.assertEqual(detect_events(zeros, self.on_thresh, self.off_thresh), ())
+
+        high = self._make_profile([1.5, 1.5, 1.5])
+        events_high = detect_events(high, self.on_thresh, self.off_thresh)
+        self.assertEqual(len(events_high), 1)
+        self.assertEqual(events_high[0].event_type, "on")
+        self.assertEqual(events_high[0].timestamp, high[0][0])
+
+    def test_noise_hysteresis_and_invalid_thresholds(self) -> None:
+        noisy = self._make_profile([0.0, 1.0, 0.5, 0.7, 0.3, 0.6, 0.1])
+        events = detect_events(noisy, self.on_thresh, self.off_thresh)
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0].event_type, "on")
+        self.assertEqual(events[0].timestamp, noisy[1][0])
+        self.assertEqual(events[1].event_type, "off")
+        self.assertEqual(events[1].timestamp, noisy[6][0])
+
+        with self.assertRaises(ValueError):
+            detect_events(noisy, on_threshold=0.5, off_threshold=0.5)
+
+        with self.assertRaises(ValueError):
+            detect_events(noisy, on_threshold=0.2, off_threshold=0.8)
 
 if __name__ == "__main__":
     unittest.main()
