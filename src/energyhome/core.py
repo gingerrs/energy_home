@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
+from datetime import datetime
 
 @dataclass(frozen=True)
 class CostBreakdown:
@@ -38,3 +39,34 @@ def calculate_cost(profile, tariff) -> CostBreakdown:
         zone_energy={"single": total_energy},
         zone_cost={"single": total_cost}
     )
+
+@dataclass(frozen=True)
+class Event:
+    timestamp: datetime
+    device_id: str
+    event_type: str  # "on" або "off"
+
+def detect_events(
+    profile,
+    on_threshold: float,
+    off_threshold: float,
+    label: str = "device",
+) -> tuple[Event, ...]:
+    if on_threshold <= off_threshold:
+        raise ValueError(
+            f"Некоректні пороги: on_threshold ({on_threshold}) "
+            f"має бути більшим за off_threshold ({off_threshold})"
+        )
+
+    events: list[Event] = []
+    is_on = False
+
+    for timestamp, power_kw in profile:
+        if not is_on and power_kw >= on_threshold:
+            is_on = True
+            events.append(Event(timestamp=timestamp, device_id=label, event_type="on"))
+        elif is_on and power_kw <= off_threshold:
+            is_on = False
+            events.append(Event(timestamp=timestamp, device_id=label, event_type="off"))
+
+    return tuple(events)
