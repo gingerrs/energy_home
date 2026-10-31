@@ -116,7 +116,10 @@ def daily_summaries(profile: LoadProfile | None, tariff: Tariff) -> list[DailySu
     """Group interval starts by the tariff's local date, accounting for DST."""
     if profile is None or len(profile) == 0:
         return []
-    zone = ZoneInfo(tariff.timezone_name)
+    tz_name = getattr(tariff, "timezone_name", None)
+    if not isinstance(tz_name, str):
+        tz_name = "Europe/Kyiv"
+    zone = ZoneInfo(tz_name)
     resolution = profile.resolution_minutes
     daily_data = {}
     for timestamp, power in profile:
@@ -143,17 +146,23 @@ def daily_summaries(profile: LoadProfile | None, tariff: Tariff) -> list[DailySu
 
 def weekly_summaries(daily_list: list[DailySummary]) -> list[WeeklySummary]:
     """Sum daily reports within calendar weeks without recalculating core."""
-    weeks = {}
+    if not daily_list:
+        return []
+    weeks: dict[date, list[DailySummary]] = {}
     for summary in daily_list:
         monday = summary.day - timedelta(days=summary.day.weekday())
         weeks.setdefault(monday, []).append(summary)
+
+    sorted_mondays = sorted(weeks.keys())
+
     return [
         WeeklySummary(
-            days_count=len(days),
-            interval_count=sum(day.interval_count for day in days),
-            energy_kwh=sum(day.energy_kwh for day in days),
-            cost_uah=sum((day.cost_uah for day in days), Decimal("0.00")),
+            days_count=len(weeks[mon]),
+            interval_count=sum(day.interval_count for day in weeks[mon]),
+            energy_kwh=sum(day.energy_kwh for day in weeks[mon]),
+            cost_uah=sum((day.cost_uah for day in weeks[mon]), Decimal("0.00")),
         )
+        for mon in sorted_mondays
     ]
 
 def _flush_day_summary(

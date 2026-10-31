@@ -278,6 +278,7 @@ class TestAnalytics(unittest.TestCase):
         """Aggregation through a thread produces the same results as through a batch profile."""
         mock_tariff = Mock()
         mock_tariff.rate_at = Mock(return_value=2.0)
+        mock_tariff.timezone_name = "Europe/Kyiv"
 
         day_start = datetime(2026, 1, 15, 0, 0, tzinfo=timezone.utc)
         ts = [day_start + timedelta(minutes=15 * i) for i in range(4)]
