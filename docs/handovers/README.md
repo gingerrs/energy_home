@@ -18,6 +18,16 @@
 |---|---|---|
 | A — будинок, лічильник і моделі приладів | Маргарита | [HANDOVER-A.md](W2/HANDOVER-A.md) |
 | B — валідація даних і синтетичний профіль | Anna Yarosh | [HANDOVER-B.md](W2/HANDOVER-B.md) |
+| C — детектор подій | Діана | [HANDOVER-C.md](W2/HANDOVER-C.md) |
+| D — добові й тижневі звіти | Софія | [HANDOVER-D.md](W2/HANDOVER-D.md) |
+| Виправлення інтеграції W2 | Anna Yarosh | [INTEGRATION-FIXES.md](W2/INTEGRATION-FIXES.md) |
+
+## W3
+
+| Роль | Автор | Документ |
+|---|---|---|
+| C — метрики та порівняння тарифів | Anna Yarosh | [HANDOVER-C.md](W3/HANDOVER-C.md) |
+| B — chunk pipeline річного набору | Маргарита | [HANDOVER-B.md](W3/HANDOVER-B.md) |
 
 ## Наступні передачі
 

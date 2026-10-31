@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import io
-from datetime import date, datetime, timedelta
+from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
-from dataclasses import FrozenInstanceError
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+
 from energyhome.domain import LoadProfile, Tariff
 from energyhome.core import calculate_cost
 
@@ -15,134 +16,82 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 
+
+@dataclass(frozen=True, slots=True)
 class ReportSummary:
     """Immutable summary of an energy consumption report."""
-    __slots__ = ("_period_start", "_period_end_exclusive", "_interval_count", "_energy_kwh", "_cost_uah")
 
-    def __init__(
-        self,
-        period_start: datetime | None,
-        period_end_exclusive: datetime | None,
-        interval_count: int,
-        energy_kwh: float,
-        cost_uah: Decimal,
-    ):
-        object.__setattr__(self, "_period_start", period_start)
-        object.__setattr__(self, "_period_end_exclusive", period_end_exclusive)
-        object.__setattr__(self, "_interval_count", interval_count)
-        object.__setattr__(self, "_energy_kwh", energy_kwh)
-        object.__setattr__(self, "_cost_uah", cost_uah)
+    period_start: datetime | None
+    period_end_exclusive: datetime | None
+    interval_count: int
+    energy_kwh: float
+    cost_uah: Decimal
 
-    @property
-    def period_start(self) -> datetime | None:
-        return self._period_start
 
-    @property
-    def period_end_exclusive(self) -> datetime | None:
-        return self._period_end_exclusive
-
-    @property
-    def interval_count(self) -> int:
-        return self._interval_count
-
-    @property
-    def energy_kwh(self) -> float:
-        return self._energy_kwh
-
-    @property
-    def cost_uah(self) -> Decimal:
-        return self._cost_uah
-
-    def __setattr__(self, key, value):
-        raise FrozenInstanceError("ReportSummary is immutable")
-
-    def __eq__(self, other):
-        if not isinstance(other, ReportSummary):
-            return False
-        return (
-            self.period_start == other.period_start
-            and self.period_end_exclusive == other.period_end_exclusive
-            and self.interval_count == other.interval_count
-            and self.energy_kwh == other.energy_kwh
-            and self.cost_uah == other.cost_uah
-        )
-
+@dataclass(frozen=True, slots=True)
 class DailySummary:
-    """Summary of energy consumption for a single calendar day."""
-    def __init__(self, day, interval_count: int, energy_kwh: float, cost_uah: Decimal, coverage_pct: float = 100.0):
-        self.day = day
-        self.interval_count = interval_count
-        self.energy_kwh = energy_kwh
-        self.cost_uah = cost_uah
-        self.coverage_pct = coverage_pct
+    """Consumption and observed coverage of a local calendar day."""
 
-    def __eq__(self, other):
-        if not isinstance(other, DailySummary):
-            return False
-        return (
-            self.day == other.day
-            and self.interval_count == other.interval_count
-            and self.energy_kwh == other.energy_kwh
-            and self.cost_uah == other.cost_uah
-            and self.coverage_pct == other.coverage_pct
-        )
+    day: date
+    interval_count: int
+    energy_kwh: float
+    cost_uah: Decimal
+    coverage_pct: float = 100.0
 
+
+@dataclass(frozen=True, slots=True)
 class WeeklySummary:
-    """Summary of energy consumption for a week."""
-    def __init__(self, days_count: int, interval_count: int, energy_kwh: float, cost_uah: Decimal):
-        self.days_count = days_count
-        self.interval_count = interval_count
-        self.energy_kwh = energy_kwh
-        self.cost_uah = cost_uah
+    """Consumption of the observed days within one Monday-to-Sunday week."""
 
-    def __eq__(self, other):
-        if not isinstance(other, WeeklySummary):
-            return False
-        return (
-            self.days_count == other.days_count
-            and self.interval_count == other.interval_count
-            and self.energy_kwh == other.energy_kwh
-            and self.cost_uah == other.cost_uah
-        )
+    days_count: int
+    interval_count: int
+    energy_kwh: float
+    cost_uah: Decimal
+
 
 def build_demo1_summary(profile: LoadProfile | None, tariff: Tariff) -> ReportSummary:
-    """Build a report summary from a load profile and a tariff."""
+    """Take energy and cost from core and period boundaries from the profile."""
     if profile is None or len(profile) == 0:
         return ReportSummary(None, None, 0, 0.0, Decimal("0.00"))
 
     from energyhome.core import calculate_cost
 
     cost_result = calculate_cost(profile, tariff)
-    start = profile.start_time()
-    end = profile.end_time()
     return ReportSummary(
-        period_start=start,
-        period_end_exclusive=end,
+        period_start=profile.start_time(),
+        period_end_exclusive=profile.end_time(),
         interval_count=len(profile),
-        energy_kwh=float(cost_result.total_energy_kwh),
-        cost_uah=Decimal(str(cost_result.total_cost_uah)),
+        energy_kwh=float(cost_result.energy_kwh),
+        cost_uah=Decimal(str(cost_result.total_cost)),
     )
 
+
 def format_console_report(summary: ReportSummary) -> str:
-    """Format the report summary as a human-readable console string."""
-    if summary.interval_count > 0 and (summary.period_start is None or summary.period_end_exclusive is None):
+    """Format a report with an exclusive end boundary and two money decimals."""
+    if summary.interval_count > 0 and (
+        summary.period_start is None or summary.period_end_exclusive is None
+    ):
         raise ValueError("Invalid period boundaries")
     if (summary.period_start is None) != (summary.period_end_exclusive is None):
         raise ValueError("Invalid period boundaries")
-    if summary.period_start is None or summary.period_end_exclusive is None:
+    if summary.period_start is None:
         period_str = "немає даних"
     else:
-        period_str = f"[{summary.period_start.isoformat()}, {summary.period_end_exclusive.isoformat()}]"
-    cost_str = f"{summary.cost_uah:.2f}"
+        period_str = (
+            f"[{summary.period_start.isoformat()}, "
+            f"{summary.period_end_exclusive.isoformat()})"
+        )
     return (
         f"Період: {period_str}\n"
         f"Інтервалів: {summary.interval_count}\n"
         f"Енергія: {summary.energy_kwh} kWh\n"
-        f"Вартість: {cost_str} UAH"
+        f"Вартість: {summary.cost_uah:.2f} UAH"
     )
 
+
 class SubProfile:
-    """Helper container representing a sub-profile for a specific day."""
+    """Observed intervals of a day, without filling gaps with invented readings."""
+
     def __init__(self, timestamps, powers, resolution):
         self.timestamps = timestamps
         self.power_kw = powers
@@ -152,7 +101,9 @@ class SubProfile:
         return self.timestamps[0] if self.timestamps else None
 
     def end_time(self):
-        return self.timestamps[-1] + timedelta(minutes=self.resolution_minutes) if self.timestamps else None
+        if not self.timestamps:
+            return None
+        return self.timestamps[-1] + timedelta(minutes=self.resolution_minutes)
 
     def __iter__(self):
         return iter(zip(self.timestamps, self.power_kw))
@@ -160,61 +111,48 @@ class SubProfile:
     def __len__(self):
         return len(self.timestamps)
 
-def daily_summaries(profile, tariff) -> list[DailySummary]:
-    """Compute daily consumption summaries grouped by local date."""
-    if not profile:
+
+def daily_summaries(profile: LoadProfile | None, tariff: Tariff) -> list[DailySummary]:
+    """Group interval starts by the tariff's local date, accounting for DST."""
+    if profile is None or len(profile) == 0:
         return []
-    timestamps = getattr(profile, "timestamps", None)
-    powers = getattr(profile, "power_kw", None)
-    if timestamps is None or powers is None:
-        try:
-            pairs = list(profile)
-            if not pairs:
-                return []
-            timestamps, powers = zip(*pairs)
-        except Exception:
-            return []
-    if not timestamps:
-        return []
+    zone = ZoneInfo(tariff.timezone_name)
+    resolution = profile.resolution_minutes
     daily_data = {}
-    for ts, power in zip(timestamps, powers):
-        day = ts.date()
-        if day not in daily_data:
-            daily_data[day] = {"timestamps": [], "powers": []}
-        daily_data[day]["timestamps"].append(ts)
-        daily_data[day]["powers"].append(power)
+    for timestamp, power in profile:
+        day = timestamp.astimezone(zone).date()
+        daily_data.setdefault(day, []).append((timestamp, power))
+
     results = []
-    resolution = getattr(profile, "resolution_minutes", 15)
-    for day, data in sorted(daily_data.items()):
-        sub_profile = SubProfile(data["timestamps"], data["powers"], resolution)
-        summary = build_demo1_summary(sub_profile, tariff)
-        expected_intervals_per_day = 24 * 60 // resolution
-        coverage_pct = round((summary.interval_count / expected_intervals_per_day) * 100, 2)
-        results.append(
-            DailySummary(
-                day=day,
-                interval_count=summary.interval_count,
-                energy_kwh=summary.energy_kwh,
-                cost_uah=summary.cost_uah,
-                coverage_pct=coverage_pct,
-            )
-        )
+    for day, readings in sorted(daily_data.items()):
+        timestamps, powers = zip(*readings)
+        summary = build_demo1_summary(SubProfile(timestamps, powers, resolution), tariff)
+        start = datetime.combine(day, time.min, zone).astimezone(timezone.utc)
+        end = datetime.combine(day + timedelta(days=1), time.min, zone)
+        day_minutes = (end.astimezone(timezone.utc) - start).total_seconds() / 60
+        coverage_pct = round(summary.interval_count * resolution / day_minutes * 100, 2)
+        results.append(DailySummary(
+            day=day,
+            interval_count=summary.interval_count,
+            energy_kwh=summary.energy_kwh,
+            cost_uah=summary.cost_uah,
+            coverage_pct=coverage_pct,
+        ))
     return results
 
+
 def weekly_summaries(daily_list: list[DailySummary]) -> list[WeeklySummary]:
-    """Aggregate daily summaries into weekly summaries."""
-    if not daily_list:
-        return []
-    total_days = len(daily_list)
-    total_intervals = sum(d.interval_count for d in daily_list)
-    total_energy = sum(d.energy_kwh for d in daily_list)
-    total_cost = sum(d.cost_uah for d in daily_list)
+    """Sum daily reports within calendar weeks without recalculating core."""
+    weeks = {}
+    for summary in daily_list:
+        monday = summary.day - timedelta(days=summary.day.weekday())
+        weeks.setdefault(monday, []).append(summary)
     return [
         WeeklySummary(
-            days_count=total_days,
-            interval_count=total_intervals,
-            energy_kwh=total_energy,
-            cost_uah=total_cost,
+            days_count=len(days),
+            interval_count=sum(day.interval_count for day in days),
+            energy_kwh=sum(day.energy_kwh for day in days),
+            cost_uah=sum((day.cost_uah for day in days), Decimal("0.00")),
         )
     ]
 

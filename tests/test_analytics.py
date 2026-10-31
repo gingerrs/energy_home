@@ -29,7 +29,7 @@ class TestAnalytics(unittest.TestCase):
         self.profile = self.make_profile(self.timestamps, [1.0, 2.0, 0.0, 1.0], 15)
         self.tariff = sentinel.tariff
         self.calculate_cost = Mock(
-            return_value=SimpleNamespace(total_energy_kwh=1.0, total_cost_uah=Decimal("2.50"))
+            return_value=SimpleNamespace(energy_kwh=1.0, total_cost=2.50)
         )
         core = ModuleType("energyhome.core")
         core.calculate_cost = self.calculate_cost
@@ -63,8 +63,8 @@ class TestAnalytics(unittest.TestCase):
 
     def test_summary_uses_core_values_without_recalculating(self):
         self.calculate_cost.return_value = SimpleNamespace(
-            total_energy_kwh=7.125,
-            total_cost_uah=Decimal("19.37"),
+            energy_kwh=7.125,
+            total_cost=19.37,
         )
         summary = build_demo1_summary(self.profile, self.tariff)
         report = format_console_report(summary)
@@ -97,8 +97,8 @@ class TestAnalytics(unittest.TestCase):
     def test_zero_consumption_keeps_the_observed_period(self):
         profile = self.make_profile(self.timestamps, [0.0] * 4, 15)
         self.calculate_cost.return_value = SimpleNamespace(
-            total_energy_kwh=0.0,
-            total_cost_uah=Decimal("0.00"),
+            energy_kwh=0.0,
+            total_cost=0.00,
         )
         summary = build_demo1_summary(profile, self.tariff)
         report = format_console_report(summary)
@@ -207,10 +207,11 @@ class TestAnalytics(unittest.TestCase):
         ]
         profile = self.make_profile(timestamps, [1.0, 2.0, 3.0], 15)
         self.calculate_cost.return_value = SimpleNamespace(
-            total_energy_kwh=1.5,
-            total_cost_uah=Decimal("3.75")
+            energy_kwh=1.5,
+            total_cost=3.75
         )
-        dailies = daily_summaries(profile, self.tariff)
+        tariff = SimpleNamespace(timezone_name="UTC")
+        dailies = daily_summaries(profile, tariff)
         self.assertEqual(len(dailies), 2)
         self.assertEqual(dailies[0].day, datetime(2026, 1, 15).date())
         self.assertEqual(dailies[0].interval_count, 2)
