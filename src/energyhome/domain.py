@@ -153,6 +153,12 @@ def _check_positive(value: float, what: str,
     return float(value)
 
 
+def _check_minutes(value: int, what: str, allow_zero: bool = False) -> int:
+    if type(value) is not int or value < 0 or (value == 0 and not allow_zero):
+        raise ValidationError(f'{what} must be a positive integer')
+    return value
+
+
 class EnergyMeter:
     """Grid connection point of a house with a power limit."""
 
@@ -177,9 +183,17 @@ class Device(ABC):
         start, end = period
         if type(step_minutes) is not int or step_minutes <= 0:
             raise ValidationError('Step must be a positive integer')
-        steps = int((end - start) / timedelta(minutes=step_minutes))
-        if steps <= 0:
+        if any(not isinstance(t, datetime) or t.utcoffset() is None for t in (start, end)):
+            raise ValidationError('Period boundaries must be timezone-aware datetimes')
+        start = start.astimezone(timezone.utc)
+        end = end.astimezone(timezone.utc)
+        duration = end - start
+        step = timedelta(minutes=step_minutes)
+        if duration <= timedelta(0):
             raise ValidationError('Period must contain at least one step')
+        if duration % step:
+            raise ValidationError('Period must contain a whole number of steps')
+        steps = duration // step
         minutes = [i * step_minutes for i in range(steps)]
         return LoadProfile(
             [start + timedelta(minutes=m) for m in minutes],
@@ -198,9 +212,8 @@ class CyclicDevice(Device):
     def __init__(self, device_id: str, power_kw: float, cycle_minutes: int,
                  start_minute: int = 0) -> None:
         super().__init__(device_id, power_kw)
-        self.cycle_minutes = int(_check_positive(cycle_minutes, 'Cycle'))
-        self.start_minute = int(
-            _check_positive(start_minute, 'Start', allow_zero=True))
+        self.cycle_minutes = _check_minutes(cycle_minutes, 'Cycle')
+        self.start_minute = _check_minutes(start_minute, 'Start', allow_zero=True)
 
     def is_on(self, minute: int) -> bool:
         end = self.start_minute + self.cycle_minutes
@@ -215,7 +228,7 @@ class ThermostaticDevice(Device):
                 duty_cycle, (int, float)) or not 0 <= duty_cycle <= 1:
             raise ValidationError('Duty cycle must be in [0, 1]')
         self.duty_cycle = float(duty_cycle)
-        self.cycle_minutes = int(_check_positive(cycle_minutes, 'Cycle'))
+        self.cycle_minutes = _check_minutes(cycle_minutes, 'Cycle')
 
     def is_on(self, minute: int) -> bool:
         on_minutes = self.duty_cycle * self.cycle_minutes
