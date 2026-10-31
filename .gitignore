@@ -9,3 +9,5 @@ dist/
 
 # Local settings
 .env
+# Generated datasets (scripts/prepare_data.py)
+data/generated/
