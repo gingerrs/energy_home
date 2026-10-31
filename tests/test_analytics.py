@@ -4,7 +4,7 @@ import io
 import unittest
 from contextlib import redirect_stdout
 from dataclasses import FrozenInstanceError
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch, sentinel
@@ -17,6 +17,9 @@ from energyhome.analytics import (
     daily_summaries,
     format_console_report,
     weekly_summaries,
+    iter_daily_summaries,
+    plot_daily_profile,
+    plot_device_stack,
 )
 
 class TestAnalytics(unittest.TestCase):
@@ -241,3 +244,99 @@ class TestAnalytics(unittest.TestCase):
         empty_profile = self.make_profile([], [], 15)
         self.assertEqual(daily_summaries(None, self.tariff), [])
         self.assertEqual(daily_summaries(empty_profile, self.tariff), [])
+
+    def test_streaming_two_days_and_trailing_incomplete_day(self):
+        """2 full days + part day -> 3 summary without loss of tail."""
+        tariff = Mock()
+        tariff.rate_at = Mock(return_value=2.0)
+
+        day1_start = datetime(2026, 1, 15, 0, 0, tzinfo=timezone.utc)
+        readings = []
+        for i in range(24):
+            readings.append((day1_start + timedelta(hours=i), 1.0))
+        for i in range(24):
+            readings.append((day1_start + timedelta(days=1, hours=i), 2.0))
+        for i in range(6):
+            readings.append((day1_start + timedelta(days=2, hours=i), 0.5))
+
+        summaries = list(iter_daily_summaries(readings, tariff, step_minutes=60))
+        self.assertEqual(len(summaries), 3)
+        self.assertEqual(summaries[0].day, datetime(2026, 1, 15).date())
+        self.assertEqual(summaries[0].interval_count, 24)
+        self.assertEqual(summaries[0].coverage_pct, 100.0)
+
+        self.assertEqual(summaries[1].day, datetime(2026, 1, 16).date())
+        self.assertEqual(summaries[1].interval_count, 24)
+        self.assertEqual(summaries[1].coverage_pct, 100.0)
+
+        self.assertEqual(summaries[2].day, datetime(2026, 1, 17).date())
+        self.assertEqual(summaries[2].interval_count, 6)
+        self.assertEqual(summaries[2].coverage_pct, 25.0)
+    
+    def test_streaming_matches_batch_summary(self):
+        """Aggregation through a thread produces the same results as through a batch profile."""
+        mock_tariff = Mock()
+        mock_tariff.rate_at = Mock(return_value=2.0)
+
+        day_start = datetime(2026, 1, 15, 0, 0, tzinfo=timezone.utc)
+        ts = [day_start + timedelta(minutes=15 * i) for i in range(4)]
+        powers = [1.0, 2.0, 0.0, 1.0]
+
+        stream_res = list(iter_daily_summaries(zip(ts, powers), mock_tariff, step_minutes=15))[0]
+        batch_profile = self.make_profile(ts, powers, 15)
+        batch_res = daily_summaries(batch_profile, mock_tariff)[0]
+
+        self.assertEqual(stream_res.day, batch_res.day)
+        self.assertEqual(stream_res.interval_count, batch_res.interval_count)
+        self.assertEqual(stream_res.coverage_pct, batch_res.coverage_pct)
+
+        self.assertEqual(stream_res.energy_kwh, 1.0)
+        self.assertEqual(stream_res.cost_uah, Decimal("2.00"))
+
+    def test_empty_stream_handling(self):
+        """The empty thread does not cause exceptions and returns 0 summaries."""
+        summaries = list(iter_daily_summaries([], self.tariff, step_minutes=15))
+        self.assertEqual(summaries, [])
+
+    def test_plots_empty_inputs_do_not_crash(self):
+        """Empty lists in graph functions correctly return the canvas."""
+        fig_profile = plot_daily_profile([], [])
+        fig_stack = plot_device_stack([])
+        self.assertIsNotNone(fig_profile)
+        self.assertIsNotNone(fig_stack)
+
+    def test_headless_file_saving(self):
+        """Checking windowless saving of graphs in a physical PNG file."""
+        from pathlib import Path
+        import tempfile
+
+        start = datetime(2026, 1, 15, 10, 0, tzinfo=timezone.utc)
+        timestamps = [start + timedelta(minutes=15 * i) for i in range(4)]
+        powers = [1.5, 2.0, 0.5, 1.2]
+
+        mock_tariff = MagicMock()
+        mock_tariff.rate_at.return_value = 4.32
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            file_profile = Path(tmp_dir) / "daily_profile.png"
+            file_stack = Path(tmp_dir) / "device_stack.png"
+
+            fig1 = plot_daily_profile(
+                timestamps=timestamps,
+                powers_kw=powers,
+                tariff=mock_tariff,
+                output_path=file_profile,
+            )
+            fig2 = plot_device_stack(
+                timestamps=timestamps,
+                total_power_kw=powers,
+                output_path=file_stack,
+            )
+
+            self.assertIsNotNone(fig1)
+            self.assertIsNotNone(fig2)
+            self.assertTrue(file_profile.exists())
+            self.assertTrue(file_stack.exists())
+            self.assertGreater(file_profile.stat().st_size, 0)
+            self.assertGreater(file_stack.stat().st_size, 0)
+            mock_tariff.rate_at.assert_called()
