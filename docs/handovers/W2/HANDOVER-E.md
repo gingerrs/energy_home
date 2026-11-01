@@ -77,9 +77,15 @@ python -m energyhome --log-level DEBUG report --input data/demo/meter_15min.csv
 ## Приймання
 
 Workflow запускається на push та PR до main; `continue-on-error` немає.
-Зелений прогін і контроль із навмисно зламаним тестом треба зафіксувати посиланнями
-на фактичні GitHub Actions runs після публікації гілки. Зламаний тест має жити
-лише в окремій перевірочній гілці, не в PR з реалізацією.
+Перевірено на GitHub Actions:
+
+- [Зелений прогін](https://github.com/gingerrs/energy_home/actions/runs/41297576420)
+  на `1cfcfd6`: усі 4 jobs успішні, включно зі встановленням, повним набором тестів,
+  окремими CLI-тестами й реальним звітом.
+- [Навмисно зламаний тест](https://github.com/gingerrs/energy_home/actions/runs/41297591807)
+  на `2548064`: усі 4 jobs упали саме на кроці `Run all tests`; наступні кроки пропущено.
+  Гілка `test/andrii-w2-E-ci-failure` містить єдиний додатковий failure probe.
+  Її не зливати: зламаного тесту немає в гілці W2-E та її PR.
 
 Незалежне review Софією, усна передача та погодження нового infra API командою
 потрібні окремо. До цього не вважати Status=Done підтвердженим.
