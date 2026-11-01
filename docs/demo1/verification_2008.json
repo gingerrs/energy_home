@@ -1,0 +1,26 @@
+{
+  "base_commit": "3de77d5",
+  "source": "UCI 235, source-calendar year 2008",
+  "input_sha256": "4259c9d7ece5dbee9ab8d53682baac68d791c864f0f64a52b4043cb3b90894b7",
+  "interval_count": 526845,
+  "rejects": 195,
+  "gaps": 16,
+  "energy_kwh": 9413.5128,
+  "tariff_costs": {
+    "single": 23533.78,
+    "two_zone": 21128.57
+  },
+  "daily_rows": 367,
+  "weekly_rows": 53,
+  "observed_period": "Період: [2007-12-31T23:00:00+00:00, 2008-12-31T23:00:00+00:00)",
+  "process_peak_rss_kib": 53892,
+  "process_peak_rss_before_kib": 52228,
+  "daily_weekly_core_equal": true,
+  "independent_chunk_size": 1000,
+  "note": "Previous timing/RSS describe the pre-review API run; CLI timing describes final publication version.",
+  "cli_exit_code": 0,
+  "cli_report_seconds": 30.147,
+  "missing_intervals_reported": 195,
+  "cli_command": "python -m energyhome report --input data/generated/uci_2008.csv",
+  "report_seconds_before_review_fixes": 47.612
+}
