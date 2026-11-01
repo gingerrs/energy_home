@@ -74,8 +74,12 @@ core. Через добове округлення сума вартості д�
 
 ## CLI та перевірка
 
-CLI читає CSV через dataio, створює `SingleZoneTariff` і друкує готовий звіт
-аналітики. Приклад запуску з кореня репозиторію:
+CLI читає CSV потоком через dataio, створює тариф із `config/tariffs.json`
+через `tariff_from_config` і друкує `build_annual_report`. Межі `--from/--to`
+напіввідкриті, з явним часовим поясом. Крок береться з `.quality.json` поруч
+із CSV, типово 15 хв. Порожній вибір дає помилку. Старі W1 API вище збережені.
+Деталі звіту, округлення, пропусків і графіків: [Demo 1](demo1/README.md).
+Приклад запуску з кореня репозиторію:
 
 ```sh
 PYTHONPATH=src python3 -m energyhome report --input data/demo/meter_15min.csv --tariff single
