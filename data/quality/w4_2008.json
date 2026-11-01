@@ -1,0 +1,142 @@
+{
+  "backup": {
+    "byte_reproducible": true,
+    "chunk_size": 1000,
+    "csv_sha256": "14aeda34733644e53a680ac0af462613e78552b8cc085187c240a115be0bc858",
+    "energy_kwh": "7136.7368225",
+    "expected_intervals": 35136,
+    "first_timestamp": "2008-01-01T00:00:00Z",
+    "gaps": 0,
+    "last_timestamp": "2008-12-31T23:45:00Z",
+    "missing_intervals": 0,
+    "period_end_exclusive": "2009-01-01T00:00:00+00:00",
+    "period_start": "2008-01-01T00:00:00+00:00",
+    "reject_reasons": {},
+    "rejects": 0,
+    "replay_chunk_size": 17,
+    "replay_gaps": 0,
+    "replay_rejects": 0,
+    "replay_rows": 35136,
+    "rows": 35136,
+    "seed": 42,
+    "source": "synthetic",
+    "source_rows": 35136,
+    "step_minutes": 15,
+    "timezone": "UTC",
+    "year": 2008
+  },
+  "checks": {
+    "backup_equal": true,
+    "chunk_sizes_equal": true,
+    "control_slice_equal": true,
+    "independent_raw_equal": true
+  },
+  "control_slice": {
+    "energy_kwh_exact": "9461/30000",
+    "gaps": 0,
+    "path": "tests/fixtures/w4_uci_slice.csv",
+    "rejects": 0,
+    "rows": 12,
+    "sha256": "110c905e16398846d55e32c1c96993b72315521acabe67168138e0a4c18ffd63",
+    "source_lines": [
+      547598,
+      547609
+    ]
+  },
+  "independent_raw_check": {
+    "energy_kwh_exact": "56481077/6000",
+    "fall_dst_day": {
+      "accepted_rows": 1440,
+      "source_rows": 1440
+    },
+    "first_timestamp": "2007-12-31T23:00:00+00:00",
+    "gap_events": 16,
+    "last_timestamp": "2008-12-31T22:59:00+00:00",
+    "leap_day": {
+      "accepted_rows": 1440,
+      "source_rows": 1440
+    },
+    "method": "Direct csv reader, raw decimal milli-kW sum, UTC roundtrip, complete row-by-row comparison; no production parser/cleaner.",
+    "missing_intervals": 195,
+    "reject_reasons": {
+      "Missing value": 135,
+      "Nonexistent local timestamp": 60
+    },
+    "rows": 526845,
+    "source_rows": 527040,
+    "spring_dst_day": {
+      "accepted_rows": 1380,
+      "source_rows": 1440
+    }
+  },
+  "real_runs": [
+    {
+      "chunk_size": 17,
+      "csv_sha256": "11bcaaeca48728af3fe5e208a5b26da0ada7b542737f175aea05b3ed665b8cc1",
+      "energy_kwh": "9413.512833333333333333333333",
+      "expected_intervals": 527040,
+      "first_timestamp": "2007-12-31T23:00:00Z",
+      "gaps": 16,
+      "last_timestamp": "2008-12-31T22:59:00Z",
+      "missing_intervals": 195,
+      "period_end_exclusive": "2008-12-31T23:00:00+00:00",
+      "period_start": "2007-12-31T23:00:00+00:00",
+      "reject_reasons": {
+        "Missing value": 135,
+        "Nonexistent local timestamp": 60
+      },
+      "rejects": 195,
+      "rows": 526845,
+      "seed": null,
+      "source": "uci",
+      "source_rows": 527040,
+      "step_minutes": 1,
+      "timezone": "Europe/Paris",
+      "year": 2008
+    },
+    {
+      "chunk_size": 1000,
+      "csv_sha256": "11bcaaeca48728af3fe5e208a5b26da0ada7b542737f175aea05b3ed665b8cc1",
+      "energy_kwh": "9413.512833333333333333333333",
+      "expected_intervals": 527040,
+      "first_timestamp": "2007-12-31T23:00:00Z",
+      "gaps": 16,
+      "last_timestamp": "2008-12-31T22:59:00Z",
+      "missing_intervals": 195,
+      "period_end_exclusive": "2008-12-31T23:00:00+00:00",
+      "period_start": "2007-12-31T23:00:00+00:00",
+      "reject_reasons": {
+        "Missing value": 135,
+        "Nonexistent local timestamp": 60
+      },
+      "rejects": 195,
+      "rows": 526845,
+      "seed": null,
+      "source": "uci",
+      "source_rows": 527040,
+      "step_minutes": 1,
+      "timezone": "Europe/Paris",
+      "year": 2008
+    }
+  ],
+  "source": {
+    "archive_sha256": "9f84b46ade8a2d8e1286ec4b2b6c2987a45a755c59f263be3b3b3d10dfbda3ff",
+    "bytes": 132960755,
+    "creators": [
+      "Georges Hebrail",
+      "Alice Berard"
+    ],
+    "dataset": "UCI Individual Household Electric Power Consumption",
+    "doi": "10.24432/C58K54",
+    "download_url": "https://archive.ics.uci.edu/static/public/235/individual+household+electric+power+consumption.zip",
+    "file": "household_power_consumption.txt",
+    "file_sha256": "4259c9d7ece5dbee9ab8d53682baac68d791c864f0f64a52b4043cb3b90894b7",
+    "license": "CC BY 4.0",
+    "source_line_first": 547598,
+    "source_line_last": 1074637,
+    "timezone_assumption": "Europe/Paris; source has no offset/fold metadata. Naive ambiguous labels use fold=0; nonexistent labels are rejected.",
+    "url": "https://archive.ics.uci.edu/dataset/235/individual+household+electric+power+consumption",
+    "year_basis": "source local calendar [2008-01-01, 2009-01-01)"
+  },
+  "verified_on": "2026-11-01"
+}

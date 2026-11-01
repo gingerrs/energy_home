@@ -12,3 +12,4 @@ dist/
 .venv/
 # Generated datasets (scripts/prepare_data.py)
 data/generated/
+data/raw/
