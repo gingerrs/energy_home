@@ -26,7 +26,7 @@ jobs:
     env:
       PYTHONUTF8: '1'
       MPLBACKEND: Agg
-      MPLCONFIGDIR: ${{ runner.temp }}/energyhome-mpl
+      MPLCONFIGDIR: ${{ github.workspace }}/.matplotlib
     steps:
       - uses: actions/checkout@v7
         with:
