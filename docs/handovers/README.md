@@ -20,6 +20,7 @@
 | B — валідація даних і синтетичний профіль | Anna Yarosh | [HANDOVER-B.md](W2/HANDOVER-B.md) |
 | C — детектор подій | Діана | [HANDOVER-C.md](W2/HANDOVER-C.md) |
 | D — добові й тижневі звіти | Софія | [HANDOVER-D.md](W2/HANDOVER-D.md) |
+| E — logging, декоратори та CI | Андрій | [HANDOVER-E.md](W2/HANDOVER-E.md) |
 | Виправлення інтеграції W2 | Anna Yarosh | [INTEGRATION-FIXES.md](W2/INTEGRATION-FIXES.md) |
 
 ## W3

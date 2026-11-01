@@ -2,10 +2,10 @@ import io
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from types import ModuleType
-from unittest.mock import Mock, patch, sentinel
+from unittest.mock import patch, sentinel
 
 from energyhome.cli import EnergyError, _render_report, main
+from energyhome.domain import EnergyError as DomainError
 
 
 class TestCli(unittest.TestCase):
@@ -27,7 +27,10 @@ class TestCli(unittest.TestCase):
 
     def test_command_prints_the_report_returned_by_analytics(self):
         output = io.StringIO()
-        expected = "Період: приклад\nІнтервалів: 4\nЕнергія: 7.125 kWh\nВартість: 19.37 UAH"
+        expected = (
+            "Період: приклад\nІнтервалів: 4\n"
+            "Енергія: 7.125 kWh\nВартість: 19.37 UAH"
+        )
         with patch("energyhome.cli._render_report", return_value=expected) as render:
             with redirect_stdout(output):
                 result = main(["report", "--input", "test.csv"])
@@ -53,31 +56,23 @@ class TestCli(unittest.TestCase):
         self.assertIs(caught.exception, error)
 
     def test_render_report_passes_inputs_to_analytics(self):
-        domain, dataio = ModuleType("energyhome.domain"), ModuleType("energyhome.dataio")
-        domain.EnergyError = type("DomainError", (Exception,), {})
-        domain.SingleZoneTariff = Mock(return_value=sentinel.tariff)
-        dataio.load_demo_profile = Mock(return_value=sentinel.profile)
-        modules = {"energyhome.domain": domain, "energyhome.dataio": dataio}
-        with patch.dict("sys.modules", modules):
-            with patch("energyhome.analytics.build_demo1_summary") as build:
-                with patch("energyhome.analytics.format_console_report") as fmt:
-                    build.return_value = sentinel.summary
-                    fmt.return_value = "report"
-                    result = _render_report(Path("measurements.csv"), "single", 2.5)
+        with (
+            patch("energyhome.domain.SingleZoneTariff", return_value=sentinel.tariff) as tariff,
+            patch("energyhome.dataio.load_demo_profile", return_value=sentinel.profile) as load,
+            patch("energyhome.analytics.build_demo1_summary") as build,
+            patch("energyhome.analytics.format_console_report", return_value="report") as fmt,
+        ):
+            build.return_value = sentinel.summary
+            result = _render_report(Path("measurements.csv"), "single", 2.5)
         self.assertEqual(result, "report")
-        dataio.load_demo_profile.assert_called_once_with(Path("measurements.csv"))
-        domain.SingleZoneTariff.assert_called_once_with("single", "single", "Europe/Kyiv", 2.5)
+        load.assert_called_once_with(Path("measurements.csv"))
+        tariff.assert_called_once_with("single", "single", "Europe/Kyiv", 2.5)
         build.assert_called_once_with(sentinel.profile, sentinel.tariff)
         fmt.assert_called_once_with(sentinel.summary)
 
     def test_domain_error_is_preserved_for_cli_handling(self):
-        domain, dataio = ModuleType("energyhome.domain"), ModuleType("energyhome.dataio")
-        domain.EnergyError = type("DomainError", (Exception,), {})
-        domain.SingleZoneTariff = Mock()
-        error = domain.EnergyError("Invalid measurements")
-        dataio.load_demo_profile = Mock(side_effect=error)
-        modules = {"energyhome.domain": domain, "energyhome.dataio": dataio}
-        with patch.dict("sys.modules", modules):
+        error = DomainError("Invalid measurements")
+        with patch("energyhome.dataio.load_demo_profile", side_effect=error):
             with self.assertRaises(EnergyError) as caught:
                 _render_report(Path("measurements.csv"), "single", 2.5)
         self.assertIs(caught.exception.__cause__, error)
