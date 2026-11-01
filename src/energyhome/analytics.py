@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
+from itertools import groupby
 from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 
-from energyhome.domain import LoadProfile, Tariff
+from energyhome.domain import LoadProfile, MeterReading, Tariff
 from energyhome.core import calculate_cost
+from energyhome.core import compare_tariffs, mean_price, merge_cost_breakdowns, profile_metrics
+from energyhome.dataio import clean_readings
 
 import matplotlib
 matplotlib.use("Agg")
@@ -164,6 +167,59 @@ def weekly_summaries(daily_list: list[DailySummary]) -> list[WeeklySummary]:
         )
         for mon in sorted_mondays
     ]
+
+
+def build_annual_report(readings: Iterable[MeterReading], single: Tariff, two: Tariff,
+                        step_minutes: int = 15, date_from: datetime | None = None,
+                        date_to: datetime | None = None) -> str:
+    """Build an observed-period report from daily summaries and exact core totals."""
+    if any(bound is not None and bound.utcoffset() is None for bound in (date_from, date_to)):
+        raise ValueError('Invalid period: boundaries must be timezone-aware')
+    if date_from and date_to and date_from.timestamp() >= date_to.timestamp():
+        raise ValueError('Period start must precede its end')
+    days, totals = [], compare_tariffs(None, (single, two))
+    start, peak, power_sum = None, 0.0, 0.0
+    zone = ZoneInfo(single.timezone_name)
+    selected = (r for r in clean_readings(readings, step_minutes, allow_gaps=True)
+                if (date_from is None or r.timestamp >= date_from)
+                and (date_to is None or r.timestamp < date_to))
+    for _, group in groupby(selected, lambda r: r.timestamp.astimezone(zone).date()):
+        timestamps, powers = zip(*((r.timestamp, r.power_kw) for r in group))
+        profile = SubProfile(timestamps, powers, step_minutes)
+        start = start or profile.start_time()
+        old = totals[single.tariff_id]
+        totals = {key: merge_cost_breakdowns((totals[key], cost))
+                  for key, cost in compare_tariffs(profile, (single, two)).items()}
+        cost = totals[single.tariff_id]
+        daily = daily_summaries(profile, single)[0]
+        energy = round(cost.energy_kwh - old.energy_kwh, 4)
+        money = Decimal(str(cost.total_cost)) - Decimal(str(old.total_cost))
+        days.append(replace(daily, energy_kwh=energy, cost_uah=money))
+        metrics = profile_metrics(profile, single)
+        peak = max(peak, metrics.peak_kw)
+        power_sum += metrics.mean_power_kw * len(profile)
+    if not days:
+        raise ValueError('No data in the selected period')
+    count = sum(day.interval_count for day in days)
+    mean = power_sum / count
+    summary = ReportSummary(start, profile.end_time(), count, cost.energy_kwh,
+                            Decimal(str(cost.total_cost)))
+    missing = (profile.end_time() - start) // timedelta(minutes=step_minutes) - count
+    lines = [format_console_report(summary), f'Пік: {peak:g} kW',
+             f'Нерівномірність: {peak / mean if mean else "не визначено"}',
+             f'Середня ціна: {mean_price(cost) if mean else "не визначено"} UAH/kWh',
+             f'Тарифи (UAH), базовий: {single.tariff_id}:']
+    lines.extend(f'{key}: {part.total_cost:.2f}' for key, part in totals.items())
+    lines.append(f'Пропущено інтервалів у спостереженому періоді: {missing}')
+    lines.append('Добові суми: округлення переноситься між днями.')
+    lines.append('Добові підсумки: дата | інтервали | kWh | UAH | покриття')
+    lines.extend(f'{d.day} | {d.interval_count} | {d.energy_kwh:.4f} | {d.cost_uah:.2f} | '
+                 f'{d.coverage_pct:.2f}%' for d in days)
+    lines.append('Тижневі підсумки: дні | інтервали | kWh | UAH')
+    lines.extend(f'{w.days_count} | {w.interval_count} | {w.energy_kwh:.4f} | {w.cost_uah:.2f}'
+                 for w in weekly_summaries(days))
+    return '\n'.join(lines)
+
 
 def _flush_day_summary(
     day: date,
