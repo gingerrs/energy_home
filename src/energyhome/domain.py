@@ -351,3 +351,56 @@ def tariff_from_config(tariff_id: str, registry: Mapping[str, Mapping[str, objec
         return tariff_type(tariff_id=tariff_id, **entry)
     except (KeyError, TypeError, ValueError, TariffError, OverflowError) as error:
         raise TariffValidationError(f'Invalid tariff {tariff_id!r}: {error}') from error
+
+@dataclass(frozen=True)
+class ScheduledRun:
+    device_id: str
+    start: datetime
+    duration: int
+
+    def __post_init__(self) -> None:
+        _check_id(self.device_id, 'Device')
+        if not isinstance(self.start, datetime) or self.start.utcoffset() is None:
+            raise ValidationError('Scheduled run start must be a timezone-aware datetime')
+        object.__setattr__(self, 'start', self.start.astimezone(timezone.utc))
+        _check_minutes(self.duration, 'Duration')
+
+
+class Schedule:
+    def __init__(self, runs: Iterable[ScheduledRun] = ()) -> None:
+        entries = tuple(runs)
+        for run in entries:
+            if not isinstance(run, ScheduledRun):
+                raise ValidationError('Schedule must contain ScheduledRun instances')
+        self._runs = tuple(sorted(entries, key=lambda r: (r.start, r.device_id)))
+
+    def __len__(self) -> int:
+        return len(self._runs)
+
+    def __iter__(self):
+        return iter(self._runs)
+
+    def __repr__(self) -> str:
+        return f'Schedule(runs={len(self._runs)})'
+
+
+@dataclass(frozen=True)
+class SavingsResult:
+    baseline_cost_uah: float
+    optimized_cost_uah: float
+    savings_uah: float
+    savings_percent: float
+
+
+@dataclass(frozen=True)
+class OptimizationRequest:
+    house: House
+    tariff: Tariff
+    period: tuple[datetime, datetime]
+    step_minutes: int = 60
+
+
+@dataclass(frozen=True)
+class OptimizationResult:
+    schedule: Schedule
+    savings: SavingsResult
