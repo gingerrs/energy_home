@@ -65,4 +65,6 @@ def main() -> None:
         rows = write_csv(uci_year(args.input, args.year, report), out)
     print(f'{out}: {rows} рядків, rejects={len(report.rejects)}, '
           f'gaps={len(report.gaps)}')
-
+    
+if __name__ == '__main__':
+    main()
