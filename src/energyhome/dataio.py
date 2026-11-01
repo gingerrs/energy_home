@@ -67,8 +67,9 @@ class QualityReport:
 def clean_readings(
     readings: Iterable[MeterReading | RejectRecord], step_minutes: int = 15,
     mode: str = 'strict', report: QualityReport | None = None,
+    *, allow_gaps: bool = False,
 ) -> Iterator[MeterReading]:
-    """Перевіряє записи по черзі; reject пропускає помилки без заповнення прогалин."""
+    """Перевіряє записи; allow_gaps дозволяє прогалини без накопичення їхнього журналу."""
     if mode not in ('strict', 'reject'):
         raise DataImporterError('Mode must be strict or reject')
     if mode == 'reject' and report is None:
@@ -94,7 +95,7 @@ def clean_readings(
             if mode == 'strict':
                 raise DataImporterError(f'Рядок {record.line}: {record.reason}')
             continue
-        if delta > step:
+        if delta > step and not allow_gaps:
             gap = RejectRecord(report.line, 'Missing intervals',
                                (report.last_timestamp + step, timestamp))
             report.gaps.append(gap)
@@ -147,6 +148,7 @@ def iter_meter_csv(
     source_config: SourceConfig | None = None,
     mode: str = 'strict',
     report: QualityReport | None = None,
+    *, allow_gaps: bool = False,
 ) -> Iterator[MeterReading]:
     """Читає CSV потоково та передає записи спільній перевірці strict/reject."""
     cfg = source_config or SourceConfig()
@@ -154,7 +156,7 @@ def iter_meter_csv(
         raise DataImporterError('Reject mode requires a QualityReport')
     report = report if report is not None else QualityReport()
     rows = _iter_meter_rows(path, cfg, report)
-    yield from clean_readings(rows, cfg.step_minutes, mode, report)
+    yield from clean_readings(rows, cfg.step_minutes, mode, report, allow_gaps=allow_gaps)
 
 
 def _iter_meter_rows(

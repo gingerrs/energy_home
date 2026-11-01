@@ -85,12 +85,33 @@ def _load_cached_profile(input_path: Path, tariff: str):
 
 
 @timed
-def _render_report(input_path: Path, tariff_id: str, rate: float, date_from: str | None, date_to: str | None) -> str:
+def _render_report(input_path: Path, tariff_id: str, rate: float | dict,
+                   date_from: str | None, date_to: str | None) -> str:
     from .analytics import build_demo1_summary, format_console_report, SubProfile
     from .domain import EnergyError as DomainError, SingleZoneTariff
 
     dt_from = _parse_datetime(date_from)
     dt_to = _parse_datetime(date_to)
+
+    if isinstance(rate, dict):
+        from .analytics import build_annual_report
+        from .dataio import SourceConfig, iter_meter_csv
+        from .domain import tariff_from_config
+
+        try:
+            primary = tariff_from_config(tariff_id, rate)
+            other_id = 'two_zone' if tariff_id == 'single' else 'single'
+            other = tariff_from_config(other_id, rate)
+            metadata_path = input_path.with_suffix('.quality.json')
+            metadata = (json.loads(metadata_path.read_text(encoding='utf-8'))
+                        if metadata_path.exists() else {})
+            if not isinstance(metadata, dict):
+                raise ValueError('Invalid quality metadata')
+            step = metadata.get('step_minutes', 15)
+            readings = iter_meter_csv(input_path, SourceConfig(step_minutes=step), allow_gaps=True)
+            return build_annual_report(readings, primary, other, step, dt_from, dt_to)
+        except (DomainError, ValueError, OSError) as error:
+            raise EnergyError(str(error)) from error
 
     if dt_from and dt_to and dt_from > dt_to:
         raise EnergyError("Invalid period: --from cannot be later than --to")
@@ -132,17 +153,24 @@ def command_report(args: argparse.Namespace) -> int:
         if not input_path.exists():
             raise EnergyError(f"Input CSV not found: {input_path}")
 
-        config_path = Path("config/tariffs.demo.json")
+        config_path = Path('config/tariffs.json')
+        if not config_path.exists():
+            config_path = Path('config/tariffs.demo.json')
         if not config_path.exists():
             raise EnergyError(f"Config file not found: {config_path}")
 
         with open(config_path, "r", encoding="utf-8-sig") as f:
-            tariffs = json.load(f)
+            config = json.load(f)
+        if not isinstance(config, dict):
+            raise EnergyError('Invalid tariff configuration')
+        tariffs = config.get('tariffs', config)
+        if not isinstance(tariffs, dict):
+            raise EnergyError('Invalid tariff registry')
 
         if args.tariff not in tariffs:
             raise EnergyError(f"Unknown tariff configuration: {args.tariff}")
 
-        rate = tariffs[args.tariff]["rate"]
+        rate = tariffs if 'tariffs' in config else tariffs[args.tariff]['rate']
 
         print(_render_report(input_path, args.tariff, rate, args.date_from, args.date_to))
         return 0
@@ -153,7 +181,7 @@ def command_report(args: argparse.Namespace) -> int:
         logger.error("Error: Required EnergyHome component is unavailable: %s", e.name)
         return 1
 
-    except EnergyError as e:
+    except (EnergyError, ValueError, OSError) as e:
         logger.error("Error: %s", e)
         return 1
 
