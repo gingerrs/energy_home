@@ -121,3 +121,39 @@ class TestCli(unittest.TestCase):
             ])
             self.assertEqual(result, 1)
             self.assertIn("Invalid datetime format", errors.getvalue())
+
+    def test_cli_help_flag_displays_usage(self):
+        """Check the --help flag (successful help output, exit 0)."""
+        stdout_buf = io.StringIO()
+        with redirect_stdout(stdout_buf):
+            exit_code = main(["--help"])
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Energy Consumption Analysis System EnergyHome", stdout_buf.getvalue())
+
+    def test_missing_input_csv_file_exits_with_error(self):
+        """Edge/Error: Checking the processing of a non-existent input CSV file."""
+        errors = io.StringIO()
+        with redirect_stderr(errors):
+            result = main(["report", "--input", "non_existent_file_path.csv"])
+        self.assertEqual(result, 1)
+        self.assertIn("Input CSV not found", errors.getvalue())
+
+    def test_custom_log_level_invocation(self):
+        """Checking the --log-level flag to configure infrastructure logging."""
+        with patch("energyhome.cli.command_report", return_value=0), \
+             patch("energyhome.cli.configure_logging") as mock_log:
+            result = main(["--log-level", "DEBUG", "report", "--input", "test.csv"])
+            self.assertEqual(result, 0)
+            mock_log.assert_called_once_with("DEBUG")
+
+    def test_report_e2e_real_calculation_output(self):
+        """End-to-end launch of Demo 1 — checking the output of analytics results D."""
+        expected_report = "Період: 2026-10-05\nІнтервалів: 4\nЕнергія: 1.0 kWh\nВартість: 2.50 UAH"
+        with patch("energyhome.cli._render_report", return_value=expected_report):
+            stdout_buf = io.StringIO()
+            with redirect_stdout(stdout_buf):
+                code = main(["report", "--input", "data/demo/meter_15min.csv"])
+            self.assertEqual(code, 0)
+            output = stdout_buf.getvalue()
+            self.assertIn("1.0 kWh", output)
+            self.assertIn("2.50 UAH", output)
