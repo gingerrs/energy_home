@@ -1,0 +1,48 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unittest:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.11', '3.12']
+    env:
+      PYTHONUTF8: '1'
+      MPLBACKEND: Agg
+      MPLCONFIGDIR: ${{ github.workspace }}/.matplotlib
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install package and declared dependencies
+        run: python -m pip install .
+      - name: Check installed dependencies
+        run: python -m pip check
+      - name: Run all tests
+        run: python -m unittest discover -s tests -v
+      - name: Run CLI tests in a fresh process
+        run: python -m unittest discover -s tests -p test_cli.py -v
+      - name: Run real demo report
+        run: python -m energyhome report --input data/demo/meter_15min.csv --tariff single

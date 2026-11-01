@@ -1,8 +1,12 @@
 import argparse
-import sys
+import logging
 import json
 from pathlib import Path
 from typing import List, Optional
+
+from .infra import configure_logging, timed
+
+logger = logging.getLogger(__name__)
 
 class EnergyError(Exception):
     """Base exception for EnergyHome business logic errors"""
@@ -13,6 +17,12 @@ def build_parser()->argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
     prog='energyhome',
     description='Energy Consumption Analysis System EnergyHome')
+
+    parser.add_argument(
+        '--log-level',
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+        default='INFO',
+        help='Logging level on stderr (default: INFO)')
 
     subparsers = parser.add_subparsers(dest='command',required=True)
     report_parser = subparsers.add_parser('report',help='')
@@ -43,6 +53,7 @@ def _render_report(input_path: Path, tariff_id: str, rate: float) -> str:
         raise EnergyError(str(error)) from error
 
 
+@timed
 def command_report(args: argparse.Namespace)-> int:
     """
     Executes the report generation command
@@ -72,11 +83,11 @@ def command_report(args: argparse.Namespace)-> int:
     except ModuleNotFoundError as e:
         if e.name not in {"energyhome.domain", "energyhome.dataio", "energyhome.core"}:
             raise
-        sys.stderr.write(f"Error: Required EnergyHome component is unavailable: {e.name}\n")
+        logger.error("Error: Required EnergyHome component is unavailable: %s", e.name)
         return 1
 
     except EnergyError as e:
-        sys.stderr.write(f"Error: {str(e)}\n")
+        logger.error("Error: %s", e)
         return 1
 
 def main(argv: Optional[List[str]] = None)->int:
@@ -89,6 +100,7 @@ def main(argv: Optional[List[str]] = None)->int:
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
+        configure_logging(args.log_level)
         if args.command == 'report':
             return command_report(args)
         parser.print_help()
