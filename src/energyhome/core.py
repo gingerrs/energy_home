@@ -75,7 +75,7 @@ def mean_price(cost: CostBreakdown) -> float | None:
 
 
 def profile_metrics(profile: LoadProfile | None, tariff: Tariff) -> ProfileMetrics:
-    """Return peak, mean power, provisional peak/mean, and weighted mean price."""
+    """Return peak, mean power, peak/mean and weighted mean price."""
     count = len(profile) if profile is not None else 0
     mean = sum(power for _, power in profile) / count if count else 0.0
     peak = peak_kw(profile)
