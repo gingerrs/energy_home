@@ -37,6 +37,7 @@
 |---|---|---|
 | C — числовий контроль тарифів і метрик Demo 1 | Маргарита | [HANDOVER-C.md](W4/HANDOVER-C.md) |
 | B — річний прогін і контроль якості даних | Андрій | [HANDOVER-B.md](W4/HANDOVER-B.md) |
+| D — повний звіт Demo 1 на річному потоці | Anna Yarosh | [HANDOVER-D.md](W4/HANDOVER-D.md) |
 
 ## Наступні передачі
 
