@@ -27,6 +27,7 @@
 
 | Роль | Автор | Документ |
 |---|---|---|
+| A — дво- й тризонні тарифи | Андрій | [HANDOVER-A.md](W3/HANDOVER-A.md) |
 | C — метрики та порівняння тарифів | Anna Yarosh | [HANDOVER-C.md](W3/HANDOVER-C.md) |
 | B — chunk pipeline річного набору | Маргарита | [HANDOVER-B.md](W3/HANDOVER-B.md) |
 
