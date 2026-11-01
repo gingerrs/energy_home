@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from math import isfinite
@@ -244,3 +245,109 @@ class House:
         ids = [d.device_id for d in self.devices]
         if len(ids) != len(set(ids)):
             raise ValidationError('Device ids must be unique')
+
+
+class TariffValidationError(TariffError, ValidationError):
+    """Invalid zoned tariff or configuration; compatible with both error APIs."""
+
+
+@dataclass(frozen=True, slots=True)
+class TariffZone:
+    """A local [start, end) interval in minutes; start > end crosses midnight."""
+
+    zone_id: str
+    start_minute: int
+    end_minute: int
+    rate: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.zone_id, str) or not self.zone_id.strip():
+            raise TariffValidationError('Zone id must not be empty')
+        start, end = self.start_minute, self.end_minute
+        if (type(start) is not int or type(end) is not int
+                or not 0 <= start < 1440 or not 0 <= end <= 1440 or start == end):
+            raise TariffValidationError('Zone boundaries must be distinct integer minutes of a day')
+        try:
+            object.__setattr__(self, 'rate', _check_positive(self.rate, 'Rate', allow_zero=True))
+        except (ValidationError, OverflowError) as error:
+            raise TariffValidationError('Rate must be finite and non-negative') from error
+
+
+class _ZonedTariff(Tariff):
+    _zone_ids: frozenset[str] = frozenset()
+
+    def __init__(self, tariff_id: str, name: str, timezone_name: str,
+                 zones: Iterable[TariffZone]) -> None:
+        try:
+            super().__init__(tariff_id, name, timezone_name)
+            entries = tuple(zones)
+        except (TariffError, TypeError) as error:
+            raise TariffValidationError(str(error)) from error
+        if not all(isinstance(zone, TariffZone) for zone in entries):
+            raise TariffValidationError('Zones must contain TariffZone values')
+        if {zone.zone_id for zone in entries} != self._zone_ids:
+            raise TariffValidationError('Tariff must contain exactly its supported zone ids')
+        self.zones = tuple(sorted(entries, key=lambda z: (z.start_minute, z.end_minute, z.zone_id)))
+        rates, segments = {}, []
+        for zone in self.zones:
+            if zone.zone_id in rates and rates[zone.zone_id] != zone.rate:
+                raise TariffValidationError('All intervals of one zone must use the same rate')
+            rates[zone.zone_id] = zone.rate
+            start, end = zone.start_minute, zone.end_minute
+            spans = ((start, end),) if start < end else ((start, 1440), (0, end))
+            segments.extend((a, b, zone) for a, b in spans if a < b)
+        self._segments = tuple(sorted(segments, key=lambda segment: segment[0]))
+        cursor = 0
+        for start, end, _ in self._segments:
+            if start != cursor:
+                raise TariffValidationError('Zones must cover the day without gaps or overlaps')
+            cursor = end
+        if cursor != 1440:
+            raise TariffValidationError('Zones must cover the whole day')
+
+    def _zone_at(self, timestamp: datetime) -> TariffZone:
+        if not isinstance(timestamp, datetime) or timestamp.utcoffset() is None:
+            raise TariffValidationError('Timestamp must be a timezone-aware datetime value')
+        try:
+            local = timestamp.astimezone(timezone.utc).astimezone(ZoneInfo(self.timezone_name))
+        except (OverflowError, ValueError) as error:
+            raise TariffValidationError('Timestamp is outside the supported range') from error
+        minute = local.hour * 60 + local.minute
+        return next(zone for start, end, zone in self._segments if start <= minute < end)
+
+    def zone_at(self, timestamp: datetime) -> str:
+        """Return the zone id at the instant, using the tariff's local clock."""
+        return self._zone_at(timestamp).zone_id
+
+    def rate_at(self, timestamp: datetime) -> float:
+        """Return the zone rate in UAH/kWh, with no I/O, rounding or state changes."""
+        return self._zone_at(timestamp).rate
+
+
+class TwoZoneTariff(_ZonedTariff):
+    """A fully covered local day with day/night zones and explicit rates."""
+
+    _zone_ids = frozenset({'day', 'night'})
+
+
+class ThreeZoneTariff(_ZonedTariff):
+    """A fully covered local day with day/night/peak zones and explicit rates."""
+
+    _zone_ids = frozenset({'day', 'night', 'peak'})
+
+
+def tariff_from_config(tariff_id: str, registry: Mapping[str, Mapping[str, object]]) -> Tariff:
+    """Build from a parsed registry; unknown ids/types raise ValidationError."""
+    try:
+        entry = registry[tariff_id]
+        if not isinstance(entry, Mapping):
+            raise TariffValidationError('A tariff configuration must be an object')
+        entry = dict(entry)
+        kind = entry.pop('type')
+        tariff_type = {'single': SingleZoneTariff, 'two_zone': TwoZoneTariff,
+                       'three_zone': ThreeZoneTariff}[kind]
+        if tariff_type is not SingleZoneTariff:
+            entry['zones'] = tuple(TariffZone(**zone) for zone in entry['zones'])
+        return tariff_type(tariff_id=tariff_id, **entry)
+    except (KeyError, TypeError, ValueError, TariffError, OverflowError) as error:
+        raise TariffValidationError(f'Invalid tariff {tariff_id!r}: {error}') from error

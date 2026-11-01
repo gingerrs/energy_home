@@ -1,0 +1,37 @@
+{
+  "$schema": "./tariffs.schema.json",
+  "schema_version": 1,
+  "synthetic": true,
+  "currency": "UAH",
+  "energy_unit": "kWh",
+  "tariffs": {
+    "single": {
+      "type": "single",
+      "name": "Synthetic single-zone example",
+      "timezone_name": "Europe/Kyiv",
+      "rate": 2.5
+    },
+    "two_zone": {
+      "type": "two_zone",
+      "name": "Synthetic two-zone example",
+      "timezone_name": "Europe/Kyiv",
+      "zones": [
+        {"zone_id": "night", "start_minute": 1380, "end_minute": 420, "rate": 1.25},
+        {"zone_id": "day", "start_minute": 420, "end_minute": 1380, "rate": 2.5}
+      ]
+    },
+    "three_zone": {
+      "type": "three_zone",
+      "name": "Synthetic three-zone example",
+      "timezone_name": "Europe/Kyiv",
+      "zones": [
+        {"zone_id": "night", "start_minute": 1380, "end_minute": 420, "rate": 1.0},
+        {"zone_id": "day", "start_minute": 420, "end_minute": 480, "rate": 2.0},
+        {"zone_id": "peak", "start_minute": 480, "end_minute": 660, "rate": 3.0},
+        {"zone_id": "day", "start_minute": 660, "end_minute": 1200, "rate": 2.0},
+        {"zone_id": "peak", "start_minute": 1200, "end_minute": 1320, "rate": 3.0},
+        {"zone_id": "day", "start_minute": 1320, "end_minute": 1380, "rate": 2.0}
+      ]
+    }
+  }
+}

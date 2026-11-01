@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EnergyHome synthetic tariff registry",
+  "description": "Structural validation; domain also verifies IANA timezone, zone ids, rates and complete nonoverlapping local-day coverage.",
+  "type": "object",
+  "required": ["schema_version", "synthetic", "currency", "energy_unit", "tariffs"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {"const": "./tariffs.schema.json"},
+    "schema_version": {"const": 1},
+    "synthetic": {"const": true},
+    "currency": {"const": "UAH"},
+    "energy_unit": {"const": "kWh"},
+    "tariffs": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"type": "string", "pattern": "\\S"},
+      "additionalProperties": {
+        "oneOf": [
+          {"$ref": "#/$defs/single"},
+          {"$ref": "#/$defs/two_zone"},
+          {"$ref": "#/$defs/three_zone"}
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "rate": {"type": "number", "minimum": 0},
+    "metadata": {
+      "type": "object",
+      "required": ["type", "name", "timezone_name"],
+      "properties": {
+        "type": {"enum": ["single", "two_zone", "three_zone"]},
+        "name": {"type": "string"},
+        "timezone_name": {"type": "string", "minLength": 1}
+      }
+    },
+    "zone": {
+      "type": "object",
+      "required": ["zone_id", "start_minute", "end_minute", "rate"],
+      "additionalProperties": false,
+      "properties": {
+        "zone_id": {"enum": ["day", "night", "peak"]},
+        "start_minute": {"type": "integer", "minimum": 0, "maximum": 1439},
+        "end_minute": {"type": "integer", "minimum": 0, "maximum": 1440},
+        "rate": {"$ref": "#/$defs/rate"}
+      }
+    },
+    "single": {
+      "allOf": [
+        {"$ref": "#/$defs/metadata"},
+        {
+          "required": ["rate"],
+          "properties": {
+            "type": {"const": "single"},
+            "rate": {"$ref": "#/$defs/rate"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "two_zone": {
+      "allOf": [
+        {"$ref": "#/$defs/metadata"},
+        {
+          "required": ["zones"],
+          "properties": {
+            "type": {"const": "two_zone"},
+            "zones": {
+              "type": "array",
+              "minItems": 2,
+              "items": {
+                "allOf": [
+                  {"$ref": "#/$defs/zone"},
+                  {"properties": {"zone_id": {"enum": ["day", "night"]}}}
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "three_zone": {
+      "allOf": [
+        {"$ref": "#/$defs/metadata"},
+        {
+          "required": ["zones"],
+          "properties": {
+            "type": {"const": "three_zone"},
+            "zones": {
+              "type": "array",
+              "minItems": 3,
+              "items": {"$ref": "#/$defs/zone"}
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}
