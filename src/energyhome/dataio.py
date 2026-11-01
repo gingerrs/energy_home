@@ -136,7 +136,10 @@ def parse_timestamp(value: str, fmt: str, tz_name: str) -> datetime:
         tz = ZoneInfo(tz_name)
     except ZoneInfoNotFoundError as err:
         raise ValueError(f"Невідома часова зона: '{tz_name}'") from err
-    return dt.replace(tzinfo=tz).astimezone(UTC)
+    result = dt.replace(tzinfo=tz).astimezone(UTC)
+    if result.astimezone(tz).replace(tzinfo=None) != dt:
+        raise ValueError('Nonexistent local timestamp')
+    return result
 
 
 def iter_meter_csv(
@@ -198,20 +201,49 @@ def _iter_meter_rows(
 
 def read_chunks(
     path: Path | str, source_config: SourceConfig | None = None,
-    chunk_size: int = 1000,
+    chunk_size: int = 1000, year: int | None = None,
 ) -> Iterator[list[tuple[int, MeterReading | RejectRecord]]]:
     """Ліниво читає CSV блоками до `chunk_size` пар (рядок, сирий запис).
 
     Наступний блок читається лише на запит; останній неповний блок
     повертається. Помилки структури файлу виникають при читанні їхнього блоку.
+    Опційний year відбирає календарний рік джерела до поділу на чанки;
+    роки джерела мають іти послідовно. Фізичні номери рядків зберігаються.
     """
     if type(chunk_size) is not int or chunk_size <= 0:
         raise DataImporterError('Chunk size must be a positive integer')
+    if year is not None and (type(year) is not int or not 1 <= year <= 9998):
+        raise DataImporterError('Year must be an integer between 1 and 9998')
     position = QualityReport()
-    rows = _iter_meter_rows(path, source_config or SourceConfig(), position)
+    cfg = source_config or SourceConfig()
+    rows = _iter_meter_rows(path, cfg, position)
     numbered = ((position.line + 1, row) for row in rows)
+    if year is not None:
+        numbered = _year_rows(numbered, cfg, year)
     while chunk := list(islice(numbered, chunk_size)):
         yield chunk
+
+
+def _year_rows(rows: Iterable[tuple[int, MeterReading | RejectRecord]], cfg: SourceConfig,
+               year: int) -> Iterator[tuple[int, MeterReading | RejectRecord]]:
+    """Select a source-calendar year before chunk lookahead; input years must be ordered."""
+    for line, item in rows:
+        try:
+            if isinstance(item, MeterReading):
+                stamp = item.timestamp.astimezone(ZoneInfo(cfg.timezone))
+            else:
+                raw = ' '.join(item.value[column] for column in cfg.timestamp_columns)
+                stamp = (datetime.fromisoformat(raw) if raw.endswith('Z') else
+                         datetime.strptime(raw, cfg.timestamp_format))
+                if stamp.tzinfo is not None:
+                    stamp = stamp.astimezone(ZoneInfo(cfg.timezone))
+        except (ValueError, TypeError, KeyError) as error:
+            raise DataImporterError(f'Рядок {line}: cannot determine source year') from error
+        if stamp.year > year:
+            return
+        if stamp.year == year:
+            yield line, item
+
 
 def iter_clean_readings(
     path: Path | str, report: QualityReport,
