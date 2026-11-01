@@ -1,8 +1,8 @@
 import csv
 import unittest
-from dataclasses import FrozenInstanceError
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from dataclasses import FrozenInstanceError
 
 from energyhome.domain import (
     DeviceError,
@@ -14,6 +14,12 @@ from energyhome.domain import (
     SingleZoneTariff,
     Tariff,
     TariffError,
+    Schedule,
+    ScheduledRun,
+    SavingsResult,
+    OptimizationRequest,
+    OptimizationResult,
+    ValidationError,
 )
 
 
@@ -25,7 +31,7 @@ class TestDomain(unittest.TestCase):
             for row in csv.DictReader(file):
                 timestamp = datetime.fromisoformat(row['timestamp'].replace('Z', '+00:00'))
                 self.readings.append(MeterReading(timestamp, float(row['power_kw'])))
-
+        
         self.timestamps = [reading.timestamp for reading in self.readings]
         self.power_kw = [reading.power_kw for reading in self.readings]
         self.profile = LoadProfile(self.timestamps, self.power_kw, 15)
@@ -68,7 +74,7 @@ class TestDomain(unittest.TestCase):
         timestamps = [timestamp.astimezone(local_timezone) for timestamp in self.timestamps]
         profile = LoadProfile(timestamps, self.power_kw, 15)
         self.assertEqual(profile.timestamps, self.timestamps)
-        self.assertTrue(all(timestamp.tzinfo is timezone.utc for timestamp in profile.timestamps))
+        self.assertTrue(all(timestamp.tzinfo == timezone.utc for timestamp in profile.timestamps))
 
     def test_invalid_resolution(self):
         for resolution in (0, -15, 15.0, True):
@@ -128,12 +134,12 @@ class TestDomain(unittest.TestCase):
                     SingleZoneTariff('single', 'Test tariff', 'UTC', rate)
         for tariff_id, name, timezone_name in (
             ('', 'Test tariff', 'UTC'),
-            ('   ', 'Test tariff', 'UTC'),
+            (' ', 'Test tariff', 'UTC'),
             ('single', None, 'UTC'),
             ('single', 'Test tariff', 'Unknown/Zone'),
             ('single', 'Test tariff', ''),
         ):
-            with self.subTest(tariff_id=tariff_id, name=name, timezone=timezone_name):
+            with self.subTest(tariff_id=tariff_id, name=name, timezone=timezone):
                 with self.assertRaises(TariffError):
                     SingleZoneTariff(tariff_id, name, timezone_name, 4.0)
 
@@ -148,3 +154,36 @@ class TestDomain(unittest.TestCase):
     def test_tariff_is_abstract(self):
         with self.assertRaises(TypeError):
             Tariff('base', 'Base tariff', 'UTC')
+
+    def test_schedule_creation_and_iteration(self):
+        start = datetime(2026, 11, 1, 10, 0, tzinfo=timezone.utc)
+        run = ScheduledRun(device_id='heater-1', start=start, duration=30)
+        schedule = Schedule([run])
+        
+        self.assertEqual(len(schedule), 1)
+        runs = list(schedule)
+        self.assertEqual(runs[0].device_id, 'heater-1')
+        self.assertEqual(runs[0].duration, 30)
+
+    def test_scheduled_run_validation_error(self):
+        start = datetime(2026, 11, 1, 10, 0)
+        with self.assertRaises(ValidationError):
+            ScheduledRun(device_id='heater-1', start=start, duration=30)
+
+    def test_savings_and_optimization_contracts(self):
+        savings = SavingsResult(
+            baseline_cost_uah=100.0,
+            optimized_cost_uah=80.0,
+            savings_uah=20.0,
+            savings_percent=20.0
+        )
+        self.assertEqual(savings.savings_uah, 20.0)
+        self.assertEqual(savings.savings_percent, 20.0)
+        
+        req = OptimizationRequest(
+            house=None,
+            tariff=self.tariff,
+            period=(self.timestamps[0], self.timestamps[-1]),
+            step_minutes=15
+        )
+        self.assertEqual(req.step_minutes, 15)

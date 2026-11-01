@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "@tanstack/react-query": "^5.105.1",
+    "react-paginate": "^8.3.0"
+  }
+}
