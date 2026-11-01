@@ -78,9 +78,6 @@ def validate_positive(parameter: str) -> Callable[[Callable[P, R]], Callable[P, 
         return wrapped
     return decorate
 
-
-# --- Нові декоратори для W3-E ---
-
 def cache_profile(func: Callable[P, R]) -> Callable[P, R]:
     """
     Cache profile/data based on path + mtime + source_config.
@@ -90,7 +87,6 @@ def cache_profile(func: Callable[P, R]) -> Callable[P, R]:
 
     @wraps(func)
     def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
-        # Шукаємо шлях до файлу в аргументах або kwargs
         path_val = None
         for arg in args:
             if isinstance(arg, (str, Path)):
@@ -100,8 +96,6 @@ def cache_profile(func: Callable[P, R]) -> Callable[P, R]:
             path_val = Path(kwargs["path"])
         elif not path_val and "input_path" in kwargs:
             path_val = Path(kwargs["input_path"])
-
-        # Якщо це не шлях до файлу, просто виконуємо функцію без кешу
         if not path_val or not path_val.exists():
             return func(*args, **kwargs)
 
