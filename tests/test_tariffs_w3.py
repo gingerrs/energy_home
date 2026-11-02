@@ -288,6 +288,6 @@ class TestTariffsW3(unittest.TestCase):
         timestamps = [self.local(hour) for hour in (6, 7, 8, 11, 20, 22, 23)]
         figure = plot_daily_profile(timestamps, [1] * len(timestamps), self.three)
         try:
-            self.assertEqual(list(figure.axes[1].lines[0].get_ydata()), [1, 2, 3, 2, 3, 2, 1])
+            self.assertEqual(list(figure.axes[1].lines[0].get_ydata()), [1, 2, 3, 2, 3, 2, 1, 1])
         finally:
             plt.close(figure)

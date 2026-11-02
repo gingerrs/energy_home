@@ -18,7 +18,6 @@ from energyhome.domain import (
     ScheduledRun,
     SavingsResult,
     OptimizationRequest,
-    OptimizationResult,
     ValidationError,
 )
 
@@ -31,7 +30,7 @@ class TestDomain(unittest.TestCase):
             for row in csv.DictReader(file):
                 timestamp = datetime.fromisoformat(row['timestamp'].replace('Z', '+00:00'))
                 self.readings.append(MeterReading(timestamp, float(row['power_kw'])))
-        
+
         self.timestamps = [reading.timestamp for reading in self.readings]
         self.power_kw = [reading.power_kw for reading in self.readings]
         self.profile = LoadProfile(self.timestamps, self.power_kw, 15)
@@ -56,12 +55,12 @@ class TestDomain(unittest.TestCase):
         self.assertEqual(self.profile.energy_kwh(), 1.0)
 
     def test_profile_methods(self):
-        self.assertEqual(len(self.profile), 2)
+        self.assertEqual(len(self.profile), 4)
         self.assertEqual(list(self.profile), list(zip(self.timestamps, self.power_kw)))
-        self.assertEqual(self.profile.peak_kw(), 3.0)
+        self.assertEqual(self.profile.peak_kw(), 2.0)
         self.assertEqual(self.profile.start_time(), self.timestamps[0])
         self.assertEqual(self.profile.end_time(), self.timestamps[-1] + timedelta(minutes=15))
-        self.assertEqual(repr(self.profile), 'LoadProfile(points=2, resolution_minutes=15)')
+        self.assertEqual(repr(self.profile), 'LoadProfile(points=4, resolution_minutes=15)')
 
     def test_profile_copies_input_lists(self):
         self.timestamps[0] += timedelta(days=1)
@@ -83,7 +82,7 @@ class TestDomain(unittest.TestCase):
                     LoadProfile(self.timestamps, self.power_kw, resolution)
 
     def test_empty_or_mismatched_profile(self):
-        for timestamps, powers in (([], []), (self.timestamps, [1.0]), ([], [1.0])):
+        for timestamps, powers in ((self.timestamps, [1.0]), ([], [1.0])):
             with self.subTest(timestamps=timestamps, powers=powers):
                 with self.assertRaises(MeterDataError):
                     LoadProfile(timestamps, powers, 15)
@@ -108,7 +107,7 @@ class TestDomain(unittest.TestCase):
                     LoadProfile(timestamps, [1.0] * len(timestamps), 15)
 
     def test_zero_power_profile(self):
-        profile = LoadProfile(self.timestamps, [0.0, 0.0], 15)
+        profile = LoadProfile(self.timestamps, [0.0] * len(self.timestamps), 15)
         self.assertEqual(profile.energy_kwh(), 0.0)
         self.assertEqual(profile.peak_kw(), 0.0)
         self.assertEqual(self.tariff.cost(profile), 0.0)
@@ -158,8 +157,8 @@ class TestDomain(unittest.TestCase):
     def test_schedule_creation_and_iteration(self):
         start = datetime(2026, 11, 1, 10, 0, tzinfo=timezone.utc)
         run = ScheduledRun(device_id='heater-1', start=start, duration=30)
-        schedule = Schedule([run])
-        
+        schedule = Schedule([run], device_ids=['heater-1'])
+
         self.assertEqual(len(schedule), 1)
         runs = list(schedule)
         self.assertEqual(runs[0].device_id, 'heater-1')
@@ -179,7 +178,7 @@ class TestDomain(unittest.TestCase):
         )
         self.assertEqual(savings.savings_uah, 20.0)
         self.assertEqual(savings.savings_percent, 20.0)
-        
+
         req = OptimizationRequest(
             house=None,
             tariff=self.tariff,

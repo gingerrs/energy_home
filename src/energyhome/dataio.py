@@ -34,6 +34,35 @@ class SourceConfig:
     power_unit: str = "kW"
     missing_values: tuple[str, ...] = ("", "?", "NA")
 
+    def validate(self) -> None:
+        """Reject unsupported source options before opening or parsing the file."""
+        if not isinstance(self.delimiter, str) or len(self.delimiter) != 1:
+            raise DataImporterError('Delimiter must be a single character')
+        if not isinstance(self.timestamp_format, str) or not self.timestamp_format:
+            raise DataImporterError('Timestamp format must be a nonempty string')
+        if not isinstance(self.timezone, str):
+            raise DataImporterError('Source timezone must be an IANA name')
+        try:
+            ZoneInfo(self.timezone)
+        except (ZoneInfoNotFoundError, ValueError) as error:
+            raise DataImporterError(f'Unknown source timezone: {self.timezone!r}') from error
+        if type(self.step_minutes) is not int or self.step_minutes <= 0:
+            raise DataImporterError('Step must be a positive integer')
+        try:
+            timedelta(minutes=self.step_minutes)
+        except OverflowError as error:
+            raise DataImporterError('Step exceeds the supported datetime range') from error
+        if (not isinstance(self.timestamp_columns, tuple) or not self.timestamp_columns
+                or any(not isinstance(c, str) or not c for c in self.timestamp_columns)):
+            raise DataImporterError('Timestamp columns must be a nonempty tuple of column names')
+        if not isinstance(self.power_column, str) or not self.power_column:
+            raise DataImporterError('Power column must be a nonempty string')
+        if not isinstance(self.power_unit, str) or self.power_unit not in _UNIT_TO_KW:
+            raise DataImporterError(f'Невідома одиниця потужності: {self.power_unit}')
+        if (not isinstance(self.missing_values, tuple)
+                or any(not isinstance(v, str) for v in self.missing_values)):
+            raise DataImporterError('Missing values must be a tuple of strings')
+
 
 _UNIT_TO_KW = {"kW": 1.0, "W": 0.001}
 
@@ -119,11 +148,11 @@ def validate_readings(
 def parse_timestamp(value: str, fmt: str, tz_name: str) -> datetime:
     """Перетворює часову мітку джерела на datetime із часовим поясом UTC."""
     val_clean = value.strip()
-    if val_clean.endswith("Z"):
+    if 'T' in val_clean:
         try:
-            return datetime.fromisoformat(val_clean.replace("Z", "+00:00")).astimezone(
-                UTC
-            )
+            explicit = datetime.fromisoformat(val_clean.replace('Z', '+00:00'))
+            if explicit.utcoffset() is not None:
+                return explicit.astimezone(UTC)
         except ValueError:
             pass
     try:
@@ -152,6 +181,7 @@ def iter_meter_csv(
 ) -> Iterator[MeterReading]:
     """Читає CSV потоково та передає записи спільній перевірці strict/reject."""
     cfg = source_config or SourceConfig()
+    cfg.validate()
     if mode == 'reject' and report is None:
         raise DataImporterError('Reject mode requires a QualityReport')
     report = report if report is not None else QualityReport()
@@ -218,6 +248,7 @@ def read_chunks(
         raise DataImporterError('Year must be an integer between 1 and 9998')
     position = QualityReport()
     cfg = source_config or SourceConfig()
+    cfg.validate()
     rows = _iter_meter_rows(path, cfg, position)
     numbered = ((position.line + 1, row) for row in rows)
     if year is not None:
@@ -235,8 +266,10 @@ def _year_rows(rows: Iterable[tuple[int, MeterReading | RejectRecord]], cfg: Sou
                 stamp = item.timestamp.astimezone(ZoneInfo(cfg.timezone))
             else:
                 raw = ' '.join(item.value[column] for column in cfg.timestamp_columns)
-                stamp = (datetime.fromisoformat(raw) if raw.endswith('Z') else
-                         datetime.strptime(raw, cfg.timestamp_format))
+                try:
+                    stamp = datetime.fromisoformat(raw)
+                except ValueError:
+                    stamp = datetime.strptime(raw, cfg.timestamp_format)
                 if stamp.tzinfo is not None:
                     stamp = stamp.astimezone(ZoneInfo(cfg.timezone))
         except (ValueError, TypeError, KeyError) as error:

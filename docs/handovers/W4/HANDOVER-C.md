@@ -86,7 +86,6 @@ PYTHONPATH=src python scripts/prepare_data.py synthetic --year 2026
   може відрізнятися від `total_cost` на копійку. У річних прикладах вище
   такого розходження немає.
 - `core.py` не використовує NumPy (`Fraction` зі стандартної бібліотеки).
-  Проте `analytics.py` (D) імпортує matplotlib на рівні модуля, і
-  `energyhome report` через це завантажує NumPy транзитивно. Це зона D:
-  можна перенести імпорт matplotlib у функції графіків.
+  Графічні функції `analytics.py` імпортують matplotlib ліниво;
+  текстовий report не завантажує NumPy.
 - Ставки в `config/tariffs.json` синтетичні, а не офіційні.

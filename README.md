@@ -18,8 +18,9 @@ python -m pip install -e .
 python -m energyhome --help
 ```
 
-Залежності встановлюються автоматично: matplotlib для наявних графіків,
-а на Windows також tzdata для часових поясів.
+Залежності встановлюються автоматично: matplotlib для графіків,
+а на Windows також tzdata для часових поясів. Текстова аналітика завантажує
+тільки стандартну бібліотеку; matplotlib імпортується під час побудови графіка.
 
 ## Звіт
 
@@ -30,7 +31,7 @@ python -m energyhome --help
 python -m energyhome report --input data/demo/meter_15min.csv --tariff single
 ```
 
-Очікувано: 4 інтервали, 1.0 kWh, 2.50 UAH. Це синтетичний навчальний приклад;
+Очікувано: профіль `[1,2,0,1]`, 4 інтервали, 1.0 kWh, 2.50 UAH; пік 2 kW. Це синтетичний навчальний приклад;
 2.50 UAH/kWh — тестова ставка. Підтримуються `single`, `two_zone`, `three_zone`.
 Звіт містить метрики, порівняння тарифів і добові/тижневі таблиці.
 Відсутній або пошкоджений CSV, порожній вибір і неправильний період дають
@@ -46,6 +47,9 @@ python -m energyhome report --input data/generated/uci_2008.csv \
 Крок UCI у 1 хвилину читається з сусіднього `uci_2008.quality.json`;
 без такого файла використовується стандартний крок 15 хвилин.
 Межі задавайте з `Z` або UTC offset, кінець не включається.
+`--from` і `--to` можна задавати окремо. Нульове споживання за наявності
+вимірювань є успішним звітом; порожній відбір — помилкою.
+Щоб обрати інший конфіг, додайте `--tariffs /шлях/до/tariffs.json`.
 Два графіки, контрольний текст і числа реального року: [Demo 1](docs/demo1/README.md).
 Якщо основного реєстру немає, збережена підтримка старого `tariffs.demo.json`.
 
@@ -56,7 +60,7 @@ python -m energyhome --log-level DEBUG report --input data/demo/meter_15min.csv
 ```
 
 Типово рівень `INFO`: успішний звіт іде в stdout, помилки — у stderr.
-`DEBUG` додає час виконання `command_report` у секундах. Також доступні рівні
+`DEBUG` додає час виконання `_render_report` у секундах. Також доступні рівні
 `WARNING`, `ERROR` і `CRITICAL`. Імпорт пакета не налаштовує логування.
 
 ## Тести та CI
@@ -72,6 +76,18 @@ Workflow `.github/workflows/tests.yml` встановлює пакет чере�
 демо-звіт. Матриця: Ubuntu/Windows × Python 3.11/3.12; запуск — push і PR до main.
 Адміністратор може окремо зробити ці checks обов'язковими через branch protection.
 
+Нерівномірність у звіті — peak / mean power; за нульового mean вона не визначена.
+Tariff.cost і core.calculate_cost використовують один розрахунок та округлення.
+
+Для повторного числового приймання всіх трьох тарифів після підготовки UCI:
+
+```sh
+python scripts/verify_demo1.py --input data/generated/uci_2008.csv \
+    --out docs/demo1/verification_fix_all.json
+```
+
 Контракти: [docs/spec.md](docs/spec.md).
+Стан 16 пунктів: [docs/verification.md](docs/verification.md).
+Порядок PR review: [docs/review-checklist.md](docs/review-checklist.md).
 Передачі: [docs/handovers/README.md](docs/handovers/README.md).
 W2-E API та обмеження: [HANDOVER-E.md](docs/handovers/W2/HANDOVER-E.md).

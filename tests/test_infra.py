@@ -77,7 +77,7 @@ class TestLogging(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((result.stdout, result.stderr), ("", ""))
 
-    def test_cli_debug_logs_timing_to_stdout_and_report_to_stdout(self):
+    def test_cli_prints_returned_report_to_stdout(self):
         output, errors = io.StringIO(), io.StringIO()
         with patch("energyhome.cli._render_report", return_value="report"):
             with redirect_stdout(output), redirect_stderr(errors):
@@ -154,7 +154,9 @@ class TestValidatePositive(unittest.TestCase):
         def accept(value):
             return called(value)
 
-        for value in (0, -1, -0.0, float("nan"), float("inf"), -float("inf"), True, False, "1", None, 1j):
+        invalid = (0, -1, -0.0, float("nan"), float("inf"), -float("inf"),
+                   True, False, "1", None, 1j)
+        for value in invalid:
             with self.subTest(value=value):
                 with self.assertRaisesRegex(ValueError, "value must be a finite positive number"):
                     accept(value)

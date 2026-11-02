@@ -103,6 +103,11 @@ class TestAnalyticsIntegration(unittest.TestCase):
                         [sys.executable, "-m", "energyhome", "report", "--input", str(csv_path)],
                         cwd=root, env=env, capture_output=True, text=True, timeout=15,
                     )
+                    if not powers:
+                        self.assertEqual(result.returncode, 1)
+                        self.assertEqual(result.stdout, '')
+                        self.assertIn('No data', result.stderr)
+                        continue
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(result.stderr, "")
                     self.assertIn(f"Інтервалів: {len(powers)}", result.stdout)

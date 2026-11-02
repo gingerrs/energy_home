@@ -8,14 +8,14 @@
 
 - `src/energyhome/domain.py`: `MeterReading`, `LoadProfile`, абстрактний `Tariff`, `SingleZoneTariff` та ієрархія винятків.
 - `tests/test_domain.py`: 17 доменних тестів.
-- `tests/fixtures/w1_profile.csv`: контрольний профіль [1, 3] kW із кроком 15 хвилин, разом 1.0 kWh.
+- `tests/fixtures/w1_profile.csv`: контрольний профіль [1, 2, 0, 1] kW із кроком 15 хвилин, разом 1.0 kWh.
 
 Робота W1-A міститься в гілці `anna/w1` (коміт `879167dc141d9a1f1e7f967e4ed6320ea3ac5033`). Її доменний код уже є в `main`; розширення W2-A задокументоване окремо.
 
 ## Публічні конструктори та правила
 
 - `MeterReading(timestamp, power_kw)` — незмінний запис сирого вимірювання; перевірка значень виконується під час створення профілю.
-- `LoadProfile(timestamps, power_kw, resolution_minutes)` — дві послідовності однакової ненульової довжини та додатний цілий крок у хвилинах. Вхідні послідовності копіюються.
+- `LoadProfile(timestamps, power_kw, resolution_minutes)` — дві послідовності однакової довжини та додатний цілий крок у хвилинах. Вхідні послідовності копіюються.
 - `SingleZoneTariff(tariff_id, name, timezone_name, rate)` — непорожній ідентифікатор, назва-рядок, відома IANA-зона та скінченна невід'ємна ставка.
 - `Tariff` — абстрактна основа: нащадок реалізує `rate_at(timestamp)` і `zone_at(timestamp)`.
 
@@ -27,11 +27,11 @@
 
 Імпортуйте класи з `energyhome.domain`.
 
-- B створює `LoadProfile` зі списків часових міток і потужностей. Для порожнього CSV поточний loader повертає `None`: конструктор W1 не приймає порожній профіль.
+- B створює `LoadProfile` зі списків часових міток і потужностей. Для порожнього CSV поточний loader повертає `None`: порожній LoadProfile також підтримується.
 - C перебирає профіль як пари `(timestamp, power_kw)`, використовує `resolution_minutes` і `tariff.rate_at(timestamp)`.
 - D отримує `len(profile)`, `start_time()`, `end_time()`, `energy_kwh()` та `peak_kw()`. Кінець періоду виключний: остання мітка плюс один крок.
 
-Енергія: `sum(power_kw) * resolution_minutes / 60`. `SingleZoneTariff.zone_at()` повертає `single`. Метод `Tariff.cost(profile)` повертає неокруглену суму; остаточне грошове округлення у звіті належить розрахунковому модулю C.
+Енергія: `sum(power_kw) * resolution_minutes / 60`. `SingleZoneTariff.zone_at()` повертає `single`. Метод `Tariff.cost(profile)` делегує в core та повертає його фінальний округлений total_cost.
 
 ## Відтворення та перевірка
 
@@ -54,7 +54,7 @@ assert isinstance(profile, LoadProfile)
 print(profile.energy_kwh())
 ```
 
-Очікувано: `1.0`. У спільному CSV чотири інтервали по 15 хвилин із потужністю 1 kW. Часовий пояс для його міток задає `SourceConfig` модуля B.
+Очікувано: `1.0`. У спільному CSV чотири інтервали по 15 хвилин із потужностями [1, 2, 0, 1] kW. Часовий пояс для його міток задає `SourceConfig` модуля B.
 
 На знімку `main` `1bd9a9a` додатково перевірено, що B використовує справжній `domain.LoadProfile`, а C отримує для цього fixture 1.0 kWh і 2.50 UAH за умовної ставки 2.50 UAH/kWh. Це перевірка A/B/C на fixture, а не підтвердження всього командного CLI.
 
