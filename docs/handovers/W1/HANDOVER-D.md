@@ -1,3 +1,5 @@
+> Історичний запис W1 із зафіксованим тодішнім станом залежностей. Поточний контракт: ../../spec.md.
+
 # Передача W1-D
 
 Дата: 29.10.2026. Відповідальний за роль D: Андрій.
@@ -9,7 +11,7 @@
 - `src/energyhome/cli.py`: мінімальне підключення готового formatter до команди report.
 - `tests/test_analytics.py`: 18 ізольованих тестів D.
 - `tests/test_cli.py`: 9 перевірок парсера, передавання даних і обробки помилок.
-- `tests/integration_analytics.py`: 4 перевірки справжніх компонентів без mocks.
+- `tests/test_integration_analytics.py`: 4 перевірки справжніх компонентів без mocks.
 - `docs/spec.md`: контракт і очікувані залежності.
 
 Зведення бере готові числа з core й часові межі з domain. Formatter повертає
@@ -26,7 +28,7 @@
 
 ```sh
 PYTHONPATH=src python3 -m unittest discover -s tests -v
-PYTHONPATH=src python3 -m unittest discover -s tests -p integration_analytics.py -v
+PYTHONPATH=src python3 -m unittest discover -s tests -p test_integration_analytics.py -v
 PYTHONPATH=src python3 -m energyhome report --input data/demo/meter_15min.csv
 ```
 

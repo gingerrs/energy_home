@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import functools
 import logging
-import os
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import fields, is_dataclass
 from datetime import datetime
 from functools import wraps
 from inspect import Parameter, signature
@@ -24,7 +23,7 @@ def configure_logging(level: int | str = logging.INFO) -> logging.Logger:
     logger = logging.getLogger("energyhome")
     logger.setLevel(level)
     handler = next((h for h in logger.handlers if h.name == "energyhome.console"), None)
-    
+
     if handler is None:
         handler = logging.StreamHandler(sys.stderr)
         handler.set_name("energyhome.console")
@@ -33,7 +32,7 @@ def configure_logging(level: int | str = logging.INFO) -> logging.Logger:
         handler.stream = sys.stderr
     else:
         handler.setStream(sys.stderr)
-        
+
     handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
     logger.propagate = False
     return logger
@@ -78,50 +77,59 @@ def validate_positive(parameter: str) -> Callable[[Callable[P, R]], Callable[P, 
         return wrapped
     return decorate
 
+def _cache_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return type(value), value.isoformat(), str(value.tzinfo), value.fold
+    if is_dataclass(value) and not isinstance(value, type):
+        members = tuple((f.name, _cache_value(getattr(value, f.name))) for f in fields(value))
+        return type(value), members
+    if isinstance(value, Mapping):
+        return type(value), frozenset((_cache_value(k), _cache_value(v)) for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        return type(value), tuple(_cache_value(v) for v in value)
+    if isinstance(value, (set, frozenset)):
+        return type(value), frozenset(_cache_value(v) for v in value)
+    hash(value)
+    return type(value), value
+
+
 def cache_profile(func: Callable[P, R]) -> Callable[P, R]:
-    """
-    Cache profile/data based on path + mtime + source_config.
-    Does not cache raw single-pass iterators as ready records.
-    """
-    cache: dict[tuple[str, float, Any], Any] = {}
+    """Cache reusable results by file version and bound arguments; skip iterators."""
+    parameters = signature(func)
+    cache: dict[Path, tuple[object, R]] = {}
 
     @wraps(func)
     def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
-        path_val = None
-        for arg in args:
-            if isinstance(arg, (str, Path)):
-                path_val = Path(arg)
-                break
-        if not path_val and "path" in kwargs:
-            path_val = Path(kwargs["path"])
-        elif not path_val and "input_path" in kwargs:
-            path_val = Path(kwargs["input_path"])
-        if not path_val or not path_val.exists():
+        bound = parameters.bind(*args, **kwargs)
+        bound.apply_defaults()
+        path_arg = bound.arguments.get('path', bound.arguments.get('input_path'))
+        if path_arg is None:
+            path_arg = next(iter(bound.arguments.values()), None)
+        if not isinstance(path_arg, (str, Path)):
             return func(*args, **kwargs)
-
         try:
-            mtime = path_val.stat().st_mtime
+            path = Path(path_arg).resolve()
+            stat = path.stat()
         except OSError:
             return func(*args, **kwargs)
-
-        source_config = kwargs.get("tariff") or kwargs.get("config") or "default"
-        cache_key = (str(path_val.resolve()), mtime, source_config)
-
-        if cache_key in cache:
-            return cache[cache_key]
-
+        try:
+            arguments = _cache_value(bound.arguments)
+        except TypeError:
+            return func(*args, **kwargs)
+        key = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size, arguments)
+        cached = cache.get(path)
+        if cached is not None and cached[0] == key:
+            return cached[1]
         result = func(*args, **kwargs)
-        cache[cache_key] = result
+        if not isinstance(result, Iterator):
+            cache[path] = (key, result)
         return result
 
     return wrapped
 
 
 def log_call(func: Callable[P, R]) -> Callable[P, R]:
-    """
-    Log function call execution, saving result or exception.
-    Does not swallow user errors/exceptions.
-    """
+    """Log calls at DEBUG and preserve returned values, exceptions and metadata."""
     logger = logging.getLogger("energyhome.calls")
 
     @wraps(func)
@@ -132,7 +140,7 @@ def log_call(func: Callable[P, R]) -> Callable[P, R]:
             logger.debug("%s completed successfully", func.__qualname__)
             return result
         except Exception as e:
-            logger.error("%s raised %s: %s", func.__qualname__, type(e).__name__, e)
+            logger.debug("%s raised %s: %s", func.__qualname__, type(e).__name__, e)
             raise
 
     return wrapped

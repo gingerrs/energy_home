@@ -15,10 +15,10 @@ def _row(minutes: int, power: str = '1.0') -> str:
 
 def _messy_rows() -> list[str]:
     rows = [_row(15 * i) for i in range(40)]
-    rows[17] = _row(15 * 16)        
+    rows[17] = _row(15 * 16)
     rows[25] = _row(15 * 25, 'bad')
     rows[30] = _row(15 * 30, '?')
-    del rows[33]                   
+    del rows[33]
     return rows
 
 def _summary(report: QualityReport) -> tuple[object, ...]:
@@ -96,4 +96,4 @@ class ChunkPipelineTest(unittest.TestCase):
                     next(read_chunks(path, chunk_size=size))
         with self.assertRaises(DataImporterError):
             next(read_chunks(path, SourceConfig(power_unit='MW')))
-            
+

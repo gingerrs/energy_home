@@ -4,15 +4,16 @@ import io
 import unittest
 from contextlib import redirect_stdout
 from dataclasses import FrozenInstanceError
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch, sentinel
+
+from energyhome.domain import SingleZoneTariff
 
 from energyhome.analytics import (
     DailySummary,
     ReportSummary,
-    WeeklySummary,
     build_demo1_summary,
     daily_summaries,
     format_console_report,
@@ -31,9 +32,7 @@ class TestAnalytics(unittest.TestCase):
         self.calculate_cost = Mock(
             return_value=SimpleNamespace(energy_kwh=1.0, total_cost=2.50)
         )
-        core = ModuleType("energyhome.core")
-        core.calculate_cost = self.calculate_cost
-        patcher = patch.dict("sys.modules", {"energyhome.core": core})
+        patcher = patch('energyhome.analytics.calculate_cost', self.calculate_cost)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -172,12 +171,12 @@ class TestAnalytics(unittest.TestCase):
 
     def test_empty_summary_does_not_require_core(self):
         profile = self.make_profile([], [], 15)
-        with patch.dict("sys.modules", {"energyhome.core": None}):
+        with patch("energyhome.analytics.calculate_cost", side_effect=AssertionError):
             summary = build_demo1_summary(profile, self.tariff)
         self.assertEqual(summary, ReportSummary(None, None, 0, 0.0, Decimal("0.00")))
 
     def test_missing_core_is_not_replaced_by_fake_values(self):
-        with patch.dict("sys.modules", {"energyhome.core": None}):
+        with patch("energyhome.analytics.calculate_cost", side_effect=ModuleNotFoundError):
             with self.assertRaises(ModuleNotFoundError):
                 build_demo1_summary(self.profile, self.tariff)
 
@@ -196,8 +195,15 @@ class TestAnalytics(unittest.TestCase):
         self.assertIn("немає даних", format_console_report(summary))
         self.calculate_cost.assert_not_called()
 
+
+class TestDailyAnalytics(unittest.TestCase):
+    make_profile = TestAnalytics.make_profile
+
+    def setUp(self):
+        self.tariff = SingleZoneTariff('single', 'Test', 'UTC', 2.0)
+
     def test_daily_summaries_grouping_and_coverage(self):
-        """Test that daily_summaries correctly groups intervals by local day and computes coverage."""
+        """Group local days and report observed coverage."""
         day1_start = datetime(2026, 1, 15, 23, 0, tzinfo=timezone.utc)
         day2_start = datetime(2026, 1, 16, 0, 0, tzinfo=timezone.utc)
         timestamps = [
@@ -206,11 +212,7 @@ class TestAnalytics(unittest.TestCase):
             day2_start,
         ]
         profile = self.make_profile(timestamps, [1.0, 2.0, 3.0], 15)
-        self.calculate_cost.return_value = SimpleNamespace(
-            energy_kwh=1.5,
-            total_cost=3.75
-        )
-        tariff = SimpleNamespace(timezone_name="UTC")
+        tariff = SingleZoneTariff('single', 'Test', 'UTC', 2.5)
         dailies = daily_summaries(profile, tariff)
         self.assertEqual(len(dailies), 2)
         self.assertEqual(dailies[0].day, datetime(2026, 1, 15).date())
@@ -248,8 +250,7 @@ class TestAnalytics(unittest.TestCase):
 
     def test_streaming_two_days_and_trailing_incomplete_day(self):
         """2 full days + part day -> 3 summary without loss of tail."""
-        tariff = Mock()
-        tariff.rate_at = Mock(return_value=2.0)
+        tariff = self.tariff
 
         day1_start = datetime(2026, 1, 15, 0, 0, tzinfo=timezone.utc)
         readings = []
@@ -273,12 +274,10 @@ class TestAnalytics(unittest.TestCase):
         self.assertEqual(summaries[2].day, datetime(2026, 1, 17).date())
         self.assertEqual(summaries[2].interval_count, 6)
         self.assertEqual(summaries[2].coverage_pct, 25.0)
-    
+
     def test_streaming_matches_batch_summary(self):
-        """Aggregation through a thread produces the same results as through a batch profile."""
-        mock_tariff = Mock()
-        mock_tariff.rate_at = Mock(return_value=2.0)
-        mock_tariff.timezone_name = "Europe/Kyiv"
+        """Streaming and batch summaries use the same calendar and totals."""
+        mock_tariff = SingleZoneTariff('single', 'Test', 'Europe/Kyiv', 2.0)
 
         day_start = datetime(2026, 1, 15, 0, 0, tzinfo=timezone.utc)
         ts = [day_start + timedelta(minutes=15 * i) for i in range(4)]
@@ -296,7 +295,7 @@ class TestAnalytics(unittest.TestCase):
         self.assertEqual(stream_res.cost_uah, Decimal("2.00"))
 
     def test_empty_stream_handling(self):
-        """The empty thread does not cause exceptions and returns 0 summaries."""
+        """An empty stream yields no summaries."""
         summaries = list(iter_daily_summaries([], self.tariff, step_minutes=15))
         self.assertEqual(summaries, [])
 
@@ -316,8 +315,7 @@ class TestAnalytics(unittest.TestCase):
         timestamps = [start + timedelta(minutes=15 * i) for i in range(4)]
         powers = [1.5, 2.0, 0.5, 1.2]
 
-        mock_tariff = MagicMock()
-        mock_tariff.rate_at.return_value = 4.32
+        mock_tariff = SingleZoneTariff('single', 'Test', 'UTC', 4.32)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             file_profile = Path(tmp_dir) / "daily_profile.png"
@@ -341,4 +339,4 @@ class TestAnalytics(unittest.TestCase):
             self.assertTrue(file_stack.exists())
             self.assertGreater(file_profile.stat().st_size, 0)
             self.assertGreater(file_stack.stat().st_size, 0)
-            mock_tariff.rate_at.assert_called()
+            self.assertEqual(list(fig1.axes[1].lines[0].get_ydata()), [4.32] * 5)

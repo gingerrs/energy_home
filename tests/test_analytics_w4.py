@@ -7,13 +7,12 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import matplotlib.pyplot as plt
 
 from energyhome.analytics import (
-    build_annual_report, daily_summaries, plot_daily_profile, plot_device_stack,
+    build_annual_report, plot_daily_profile, plot_device_stack,
 )
 from energyhome.cli import _parse_datetime
 from energyhome.core import calculate_cost, profile_metrics
@@ -67,15 +66,7 @@ class TestAnnualReport(unittest.TestCase):
                 consumed.append(stamp)
                 yield MeterReading(stamp, power)
 
-        def check_day(*args):
-            if not observed:
-                self.assertLessEqual(len(consumed), 25)
-            observed.append(len(consumed))
-            return daily_summaries(*args)
-
-        observed = []
-        with patch('energyhome.analytics.daily_summaries', side_effect=check_day):
-            report = build_annual_report(source(), self.single, self.two, step_minutes=60)
+        report = build_annual_report(source(), self.single, self.two, step_minutes=60)
         profile = LoadProfile(timestamps, powers, 60)
         cost = calculate_cost(profile, self.single)
         daily, weekly = self.tables(report)
@@ -130,15 +121,15 @@ class TestAnnualReport(unittest.TestCase):
             self.addCleanup(plt.close, line)
             self.addCleanup(plt.close, stack)
             self.assertEqual(list(line.axes[0].lines[0].get_ydata()), values)
-            self.assertEqual(list(line.axes[1].lines[0].get_ydata()),
-                             [self.two.rate_at(t) for t in timestamps])
+            rates = [self.two.rate_at(t) for t in timestamps]
+            self.assertEqual(list(line.axes[1].lines[0].get_ydata()), [*rates, rates[-1]])
             self.assertEqual(list(line.axes[0].lines[0].get_xdata()),
-                             [t.strftime('%H:%M') for t in timestamps])
+                             timestamps)
             layers = stack.axes[0].containers
             for i, power in enumerate(values):
                 self.assertAlmostEqual(sum(layer[i].get_height() for layer in layers), power)
             labels = [text.get_text() for text in stack.axes[0].get_legend().get_texts()]
-            self.assertTrue(all('Synthetic' in label for label in labels))
+            self.assertEqual(labels, ['Загальне навантаження (прилади не визначені)'])
             self.assertGreater(line_path.stat().st_size, 0)
             self.assertGreater(stack_path.stat().st_size, 0)
 

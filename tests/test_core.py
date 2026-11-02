@@ -29,6 +29,9 @@ class DummySingleZoneTariff:
     def rate_at(self, timestamp):
         return self.rate
 
+    def zone_at(self, timestamp):
+        return 'single'
+
 class TestCoreCostCalculation(unittest.TestCase):
     def test_single_zone_constant_profile(self):
         start = datetime(2026, 1, 1, 10, 0)
@@ -140,7 +143,7 @@ class TestDemo1Regressions(unittest.TestCase):
                        for name in ('single', 'two_zone', 'three_zone')}
 
     def test_hand_computed_slices_at_23_00_and_07_00(self) -> None:
-        for month in (1, 7):  
+        for month in (1, 7):
             start = datetime(2026, month, 15, 22, 30, tzinfo=KYIV)
             cost = calculate_cost(kyiv_profile(start, [2, 2, 4, 4]),
                                   self.tariff['two_zone'])
@@ -157,7 +160,7 @@ class TestDemo1Regressions(unittest.TestCase):
 
     def test_full_and_chunked_rounded_totals_are_equal(self) -> None:
         start = datetime(2026, 1, 15, tzinfo=KYIV)
-        profile = kyiv_profile(start, [0.013] * 96)  
+        profile = kyiv_profile(start, [0.013] * 96)
         for name, tariff in self.tariff.items():
             full = calculate_cost(profile, tariff)
             for size in (1, 17, 1000):

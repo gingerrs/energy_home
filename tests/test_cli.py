@@ -1,159 +1,144 @@
-from __future__ import annotations
+"""Process-level checks of configuration, filtering and report output."""
 
-import io
+import json
+import os
+import subprocess
+import sys
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from unittest.mock import patch, sentinel
+from tempfile import TemporaryDirectory
 
-from energyhome.cli import EnergyError, _render_report, main
-from energyhome.domain import EnergyError as DomainError
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class TestCli(unittest.TestCase):
-    def test_report_success(self):
-        with patch("energyhome.cli.command_report", return_value=0) as report:
-            result = main(["report", "--input", "test.csv"])
-            self.assertEqual(result, 0)
-            self.assertEqual(report.call_args.args[0].input, "test.csv")
-            self.assertEqual(report.call_args.args[0].tariff, "single")
+    def setUp(self):
+        self.folder = TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name)
+        (self.root / 'config').mkdir()
+        self.config = self.root / 'config/tariffs.json'
+        self.config.write_bytes((ROOT / 'config/tariffs.json').read_bytes())
+        self.path = self.root / 'meter.csv'
+        self.path.write_bytes((ROOT / 'data/demo/meter_15min.csv').read_bytes())
 
-    def test_missing_input(self):
-        with redirect_stderr(io.StringIO()):
-            self.assertEqual(main(["report"]), 2)
-
-    def test_invalid_tariff(self):
-        with redirect_stderr(io.StringIO()):
-            result = main(["report", "--input", "test.csv", "--tariff", "wrong_tariff"])
-            self.assertEqual(result, 2)
-
-    def test_command_prints_the_report_returned_by_analytics(self):
-        output = io.StringIO()
-        expected = (
-            "Період: приклад\nІнтервалiв: 4\n"
-            "Енергiя: 7.125 kWh\nВартiсть: 19.37 UAH"
+    def command(self, *args):
+        return subprocess.run(
+            [sys.executable, '-m', 'energyhome', *args], cwd=self.root,
+            env=dict(os.environ, PYTHONPATH=str(ROOT / 'src')),
+            text=True, capture_output=True, timeout=20,
         )
-        with patch("energyhome.cli._render_report", return_value=expected) as render:
-            with redirect_stdout(output):
-                result = main(["report", "--input", "test.csv"])
-                self.assertEqual(result, 0)
-                self.assertEqual(output.getvalue(), expected + "\n")
-                render.assert_called_once()
 
-    def test_missing_component_is_an_error_instead_of_a_fake_report(self):
-        output, errors = io.StringIO(), io.StringIO()
-        error = ModuleNotFoundError("Core is unavailable", name="energyhome.core")
+    def report(self, *args):
+        return self.command('report', '--input', str(self.path), *args)
 
-        with patch("energyhome.cli._render_report", side_effect=error):
-            with redirect_stdout(output), redirect_stderr(errors):
-                result = main(["report", "--input", "test.csv"])
-                self.assertEqual(result, 1)
-                self.assertEqual(output.getvalue(), "")
-                self.assertIn("energyhome.core", errors.getvalue())
+    def assert_error(self, result, code=1):
+        self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, '')
+        self.assertNotIn('Traceback', result.stderr)
+        self.assertTrue(result.stderr)
 
-    def test_unrelated_missing_module_is_not_hidden(self):
-        error = ModuleNotFoundError("Internal import failed", name="internal_dependency")
-        with patch("energyhome.cli._render_report", side_effect=error):
-            with self.assertRaises(ModuleNotFoundError) as caught:
-                main(["report", "--input", "test.csv"])
-            self.assertIs(caught.exception, error)
+    def test_shared_csv_matches_saved_control_report(self):
+        result = self.report()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, '')
+        self.assertEqual(result.stdout, (ROOT / 'docs/demo1/expected_small.txt').read_text())
 
-    def test_render_report_passes_inputs_to_analytics(self):
-        with (
-            patch("energyhome.domain.SingleZoneTariff", return_value=sentinel.tariff) as tariff,
-            patch("energyhome.cli._load_cached_profile", return_value=sentinel.profile) as load,
-            patch("energyhome.analytics.build_demo1_summary") as build,
-            patch("energyhome.analytics.format_console_report", return_value="report") as fmt,
-        ):
-            build.return_value = sentinel.summary
-            result = _render_report(Path("measurements.csv"), "single", 2.5, None, None)
-            self.assertEqual(result, "report")
-            load.assert_called_once_with(Path("measurements.csv"), tariff="single")
-            tariff.assert_called_once_with("single", "single", "Europe/Kiev", 2.5)
-            build.assert_called_once_with(sentinel.profile, sentinel.tariff)
-            fmt.assert_called_once_with(sentinel.summary)
+    def test_three_tariffs_use_real_rates(self):
+        for tariff, cost in [('single', '2.50'), ('two_zone', '1.25'), ('three_zone', '1.00')]:
+            with self.subTest(tariff=tariff):
+                result = self.report('--tariff', tariff)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f'Вартість: {cost} UAH', result.stdout)
 
-    def test_domain_error_is_preserved_for_cli_handling(self):
-        error = DomainError("Invalid measurements")
-        with patch("energyhome.cli._load_cached_profile", side_effect=error):
-            with self.assertRaises(EnergyError) as caught:
-                _render_report(Path("measurements.csv"), "single", 2.5, None, None)
-            self.assertIs(caught.exception.__cause__, error)
+    def test_period_includes_from_and_excludes_to(self):
+        result = self.report('--from', '2026-01-15T00:15:00Z',
+                             '--to', '2026-01-15T00:30:00Z')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Інтервалів: 1\nЕнергія: 0.5 kWh\nВартість: 1.25 UAH', result.stdout)
 
-    def test_expected_report_error_returns_failure(self):
-        errors = io.StringIO()
-        with patch("energyhome.cli._render_report", side_effect=EnergyError("Invalid data")):
-            with redirect_stderr(errors):
-                result = main(["report", "--input", "test.csv"])
-                self.assertEqual(result, 1)
-                self.assertIn("Invalid data", errors.getvalue())
+    def test_zero_power_is_data_with_or_without_bounds(self):
+        self.path.write_text('timestamp,power_kw\n2026-01-15T00:00:00Z,0\n')
+        for bounds in [(), ('--from', '2026-01-15T00:00:00Z',
+                            '--to', '2026-01-15T00:15:00Z')]:
+            with self.subTest(bounds=bounds):
+                result = self.report(*bounds)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('Інтервалів: 1\nЕнергія: 0.0 kWh', result.stdout)
+                self.assertIn('Нерівномірність: не визначено', result.stdout)
 
-    def test_report_with_valid_interval_period(self):
-        """Тест успішного виконання звіту з коректними параметрами --from та --to"""
-        with patch("energyhome.cli._render_report", return_value="report") as render:
-            result = main([
-                "report", "--input", "test.csv",
-                "--from", "2026-01-01T00:00",
-                "--to", "2026-01-02T00:00"
-            ])
-            self.assertEqual(result, 0)
-            render.assert_called_once()
+    def test_empty_csv_and_empty_selection_fail(self):
+        self.assert_error(self.report('--from', '2030-01-01T00:00:00Z'))
+        self.path.write_text('timestamp,power_kw\n')
+        self.assert_error(self.report())
 
-    def test_report_invalid_period_from_after_to(self):
-        """Edge case: перевірка помилки, коли --from йде пізніше за --to"""
-        errors = io.StringIO()
-        with redirect_stderr(errors):
-            result = main([
-                "report", "--input", "test.csv",
-                "--from", "2026-01-05T00:00",
-                "--to", "2026-01-01T00:00"
-            ])
-            self.assertEqual(result, 1)
-            self.assertIn("Invalid period", errors.getvalue())
+    def test_explicit_config_path_works_outside_project(self):
+        custom = self.root / 'custom.json'
+        custom.write_text(json.dumps({'single': {'rate': 1.0}}))
+        self.config.unlink()
+        result = self.report('--tariffs', str(custom))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Вартість: 1.00 UAH', result.stdout)
 
-    def test_report_invalid_datetime_format(self):
-        """Edge case: перевірка невалідного формату дати/часу"""
-        errors = io.StringIO()
-        with redirect_stderr(errors):
-            result = main([
-                "report", "--input", "test.csv",
-                "--from", "invalid-date-format"
-            ])
-            self.assertEqual(result, 1)
-            self.assertIn("Invalid datetime format", errors.getvalue())
+    def test_legacy_config_requires_rate_and_handles_wrong_types(self):
+        for entry in ({}, None, [], {'rate': None}, {'rate': True}, {'rate': '2.5'},
+                      {'rate': -1}, {'rate': float('inf')}):
+            with self.subTest(entry=entry):
+                self.config.write_text(json.dumps({'single': entry}))
+                self.assert_error(self.report())
 
-    def test_cli_help_flag_displays_usage(self):
-        """Check the --help flag (successful help output, exit 0)."""
-        stdout_buf = io.StringIO()
-        with redirect_stdout(stdout_buf):
-            exit_code = main(["--help"])
-        self.assertEqual(exit_code, 0)
-        self.assertIn("Energy Consumption Analysis System EnergyHome", stdout_buf.getvalue())
+    def test_corrupt_or_wrong_shape_config_fails(self):
+        for value in ('{', '[]', '{}', '{"tariffs": []}'):
+            with self.subTest(value=value):
+                self.config.write_text(value)
+                self.assert_error(self.report())
 
-    def test_missing_input_csv_file_exits_with_error(self):
-        """Edge/Error: Checking the processing of a non-existent input CSV file."""
-        errors = io.StringIO()
-        with redirect_stderr(errors):
-            result = main(["report", "--input", "non_existent_file_path.csv"])
-        self.assertEqual(result, 1)
-        self.assertIn("Input CSV not found", errors.getvalue())
+    def test_naive_invalid_equal_and_reversed_bounds_fail(self):
+        bounds = [('--from', '2026-01-15T00:00:00'), ('--from', 'invalid'),
+                  ('--from', '2026-01-15'),
+                  ('--from', '2026-01-15T00:00:00Z', '--to', '2026-01-15T00:00:00Z'),
+                  ('--from', '2026-01-16T00:00:00Z', '--to', '2026-01-15T00:00:00Z')]
+        for args in bounds:
+            with self.subTest(args=args):
+                self.assert_error(self.report(*args))
 
-    def test_custom_log_level_invocation(self):
-        """Checking the --log-level flag to configure infrastructure logging."""
-        with patch("energyhome.cli.command_report", return_value=0), \
-             patch("energyhome.cli.configure_logging") as mock_log:
-            result = main(["--log-level", "DEBUG", "report", "--input", "test.csv"])
-            self.assertEqual(result, 0)
-            mock_log.assert_called_once_with("DEBUG")
+    def test_offset_bounds_select_same_instants_as_utc(self):
+        utc = self.report('--from', '2026-01-15T00:15:00Z', '--to', '2026-01-15T00:30:00Z')
+        local = self.report('--from', '2026-01-15T02:15:00+02:00',
+                            '--to', '2026-01-15T02:30:00+02:00')
+        self.assertEqual(local.returncode, 0, local.stderr)
+        self.assertEqual(local.stdout, utc.stdout)
 
-    def test_report_e2e_real_calculation_output(self):
-        """End-to-end launch of Demo 1 — checking the output of analytics results D."""
-        expected_report = "Період: 2026-10-05\nІнтервалів: 4\nЕнергія: 1.0 kWh\nВартість: 2.50 UAH"
-        with patch("energyhome.cli._render_report", return_value=expected_report):
-            stdout_buf = io.StringIO()
-            with redirect_stdout(stdout_buf):
-                code = main(["report", "--input", "data/demo/meter_15min.csv"])
-            self.assertEqual(code, 0)
-            output = stdout_buf.getvalue()
-            self.assertIn("1.0 kWh", output)
-            self.assertIn("2.50 UAH", output)
+    def test_missing_csv_config_and_bad_tariff_fail(self):
+        self.assert_error(self.report('--tariffs', 'missing.json'))
+        self.assert_error(self.report('--tariff', 'unknown'), code=2)
+        self.path.unlink()
+        result = self.report()
+        self.assert_error(result)
+        self.assertIn('Input CSV not found', result.stderr)
+
+    def test_missing_input_is_parser_error(self):
+        self.assert_error(self.command('report'), code=2)
+
+    def test_help_documents_config_and_timezone(self):
+        result = self.command('report', '--help')
+        self.assertEqual(result.returncode, 0)
+        self.assertIn('--tariffs', result.stdout)
+        self.assertIn('UTC offset', result.stdout)
+
+    def test_error_is_logged_once_and_debug_includes_timing(self):
+        result = self.command('--log-level', 'DEBUG', 'report', '--input', str(self.path))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('_render_report took', result.stderr)
+        self.path.unlink()
+        result = self.report()
+        self.assertEqual(result.stderr.count('ERROR'), 1)
+
+    def test_text_analytics_import_does_not_load_plotting_packages(self):
+        result = subprocess.run(
+            [sys.executable, '-c', "import sys; import energyhome.analytics; "
+             "assert 'matplotlib' not in sys.modules; assert 'numpy' not in sys.modules"],
+            env=dict(os.environ, PYTHONPATH=str(ROOT / 'src')),
+            text=True, capture_output=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)

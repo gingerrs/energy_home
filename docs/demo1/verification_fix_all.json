@@ -1,0 +1,30 @@
+{
+  "input_sha256": "11bcaaeca48728af3fe5e208a5b26da0ada7b542737f175aea05b3ed665b8cc1",
+  "intervals": 526845,
+  "energy_kwh": "9413.5128",
+  "rejects": 195,
+  "gap_events": 16,
+  "missing_intervals": 195,
+  "tariffs": {
+    "single": {
+      "cost_uah": "23533.78",
+      "daily_rows": 367,
+      "weekly_rows": 53,
+      "daily_weekly_totals_match": true
+    },
+    "two_zone": {
+      "cost_uah": "21128.57",
+      "daily_rows": 367,
+      "weekly_rows": 53,
+      "daily_weekly_totals_match": true
+    },
+    "three_zone": {
+      "cost_uah": "19752.66",
+      "daily_rows": 367,
+      "weekly_rows": 53,
+      "daily_weekly_totals_match": true
+    }
+  },
+  "independent_decimal_check": true,
+  "original_single_report_unchanged": true
+}

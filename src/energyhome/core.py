@@ -44,7 +44,7 @@ def calculate_cost(profile: LoadProfile | None, tariff: Tariff) -> CostBreakdown
     if profile is not None and len(profile):
         step = Fraction(profile.resolution_minutes, 60)
         for timestamp, power_kw in profile:
-            zone = tariff.zone_at(timestamp) if hasattr(tariff, 'zone_at') else 'single'
+            zone = tariff.zone_at(timestamp)
             value = Fraction(str(power_kw)) * step
             energy[zone] = energy.get(zone, Fraction(0)) + value
             cost = value * Fraction(str(tariff.rate_at(timestamp)))
@@ -54,7 +54,7 @@ def calculate_cost(profile: LoadProfile | None, tariff: Tariff) -> CostBreakdown
 
 @dataclass(frozen=True)
 class ProfileMetrics:
-    """Unevenness uses the provisional, not lecturer-approved, peak/mean formula."""
+    """Peak, mean power, peak/mean ratio and energy-weighted unit price."""
 
     peak_kw: float
     mean_power_kw: float
@@ -119,11 +119,12 @@ class Event:
     event_type: str
 
 def detect_events(
-    profile,
+    profile: Iterable[tuple[datetime, float]],
     on_threshold: float,
     off_threshold: float,
     label: str = "device",
 ) -> tuple[Event, ...]:
+    """Return threshold crossings with hysteresis, without a synthetic final off event."""
     if any(isinstance(value, bool) or not isinstance(value, (int, float))
            or not isfinite(value) for value in (on_threshold, off_threshold)):
         raise ValueError("Thresholds must be finite numbers")

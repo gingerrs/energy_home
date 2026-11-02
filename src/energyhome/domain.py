@@ -1,5 +1,7 @@
+"""Meter profiles, tariffs, devices and scheduled runs."""
+
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from math import isfinite
@@ -7,33 +9,42 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 class EnergyError(Exception):
-    pass
+    """An expected error that can be shown to the user."""
 
 
 class DeviceError(EnergyError):
-    pass
+    """Invalid device parameters."""
+
+
+class ValidationError(DeviceError):
+    """A domain value violates its constructor contract."""
 
 
 class TariffError(EnergyError):
-    pass
+    """Invalid tariff configuration or timestamp."""
 
 
 class ScheduleConflictError(EnergyError):
-    pass
+    """A scheduled run conflicts with a scheduling constraint."""
 
 
-class MeterDataError(EnergyError):
-    pass
+class MeterDataError(ValidationError):
+    """Invalid meter values or interval grid."""
 
 
 @dataclass(frozen=True)
 class MeterReading:
+    """Raw power at the beginning of a measurement interval."""
+
     timestamp: datetime
     power_kw: float
 
 
 class LoadProfile:
-    def __init__(self, timestamps, power_kw, resolution_minutes):
+    """A regular UTC grid of nonnegative power readings; empty grids are allowed."""
+
+    def __init__(self, timestamps: Iterable[datetime], power_kw: Iterable[float],
+                 resolution_minutes: int) -> None:
         if type(resolution_minutes) is not int or resolution_minutes <= 0:
             raise MeterDataError('Resolution must be a positive integer')
 
@@ -41,8 +52,8 @@ class LoadProfile:
         self.power_kw = list(power_kw)
         self.resolution_minutes = resolution_minutes
 
-        if not self.timestamps or len(self.timestamps) != len(self.power_kw):
-            raise MeterDataError('Timestamps and power must have the same non-zero length')
+        if len(self.timestamps) != len(self.power_kw):
+            raise MeterDataError('Timestamps and power must have the same length')
 
         for i, timestamp in enumerate(self.timestamps):
             if not isinstance(timestamp, datetime) or timestamp.utcoffset() is None:
@@ -61,30 +72,38 @@ class LoadProfile:
                 raise MeterDataError('Power must be finite and non-negative')
             self.power_kw[i] = float(power)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.timestamps)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[tuple[datetime, float]]:
         return iter(zip(self.timestamps, self.power_kw))
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f'LoadProfile(points={len(self)}, resolution_minutes={self.resolution_minutes})'
 
-    def energy_kwh(self):
+    def energy_kwh(self) -> float:
+        """Integrate the observed power over the interval grid."""
         return sum(self.power_kw) * self.resolution_minutes / 60
 
-    def peak_kw(self):
-        return max(self.power_kw)
+    def peak_kw(self) -> float:
+        """Return zero for an empty profile, otherwise the largest power."""
+        return max(self.power_kw, default=0.0)
 
-    def start_time(self):
-        return self.timestamps[0]
+    def start_time(self) -> datetime | None:
+        """Return the first interval start, or None for an empty profile."""
+        return self.timestamps[0] if self.timestamps else None
 
-    def end_time(self):
+    def end_time(self) -> datetime | None:
+        """Return the exclusive end, or None for an empty profile."""
+        if not self.timestamps:
+            return None
         return self.timestamps[-1] + timedelta(minutes=self.resolution_minutes)
 
 
 class Tariff(ABC):
-    def __init__(self, tariff_id, name, timezone_name):
+    """Local-clock tariff rates in UAH per kWh."""
+
+    def __init__(self, tariff_id: str, name: str, timezone_name: str) -> None:
         if not isinstance(tariff_id, str) or not tariff_id.strip():
             raise TariffError('Tariff id must not be empty')
         if not isinstance(name, str):
@@ -101,22 +120,26 @@ class Tariff(ABC):
         self.timezone_name = timezone_name
 
     @abstractmethod
-    def rate_at(self, timestamp):
-        pass
+    def rate_at(self, timestamp: datetime) -> float:
+        """Return the rate for the interval beginning at timestamp."""
+        raise NotImplementedError
 
     @abstractmethod
-    def zone_at(self, timestamp):
-        pass
+    def zone_at(self, timestamp: datetime) -> str:
+        """Return the local tariff zone for an interval start."""
+        raise NotImplementedError
 
-    def cost(self, profile):
-        total = 0.0
-        for timestamp, power in profile:
-            total += power * profile.resolution_minutes / 60 * self.rate_at(timestamp)
-        return total
+    def cost(self, profile: LoadProfile | None) -> float:
+        """Return core's final cost, using the same rounding as every report."""
+        from .core import calculate_cost
+
+        return calculate_cost(profile, self).total_cost
 
 
 class SingleZoneTariff(Tariff):
-    def __init__(self, tariff_id, name, timezone_name, rate):
+    """One nonnegative rate throughout the local day."""
+
+    def __init__(self, tariff_id: str, name: str, timezone_name: str, rate: float) -> None:
         super().__init__(tariff_id, name, timezone_name)
         if isinstance(rate, bool) or not isinstance(rate, (int, float)):
             raise TariffError('Rate must be a number')
@@ -124,19 +147,16 @@ class SingleZoneTariff(Tariff):
             raise TariffError('Rate must be finite and non-negative')
         self.rate = float(rate)
 
-    def rate_at(self, timestamp):
+    def rate_at(self, timestamp: datetime) -> float:
+        """Return the fixed rate for an aware timestamp."""
         if not isinstance(timestamp, datetime) or timestamp.utcoffset() is None:
             raise TariffError('Timestamp must be a timezone-aware datetime value')
         return self.rate
 
-    def zone_at(self, timestamp):
+    def zone_at(self, timestamp: datetime) -> str:
+        """Validate the timestamp and return the single zone."""
         self.rate_at(timestamp)
         return 'single'
-
-
-# W2-A
-class ValidationError(DeviceError):
-    pass
 
 
 def _check_id(value: object, what: str) -> str:
@@ -169,6 +189,8 @@ class EnergyMeter:
 
 
 class Device(ABC):
+    """A power model evaluated in elapsed minutes from a period start."""
+
     shiftable = False
 
     def __init__(self, device_id: str, power_kw: float) -> None:
@@ -177,10 +199,12 @@ class Device(ABC):
 
     @abstractmethod
     def is_on(self, minute: int) -> bool:
-        pass
+        """Whether the device runs at the given elapsed minute."""
+        raise NotImplementedError
 
     def profile_for(self, period: tuple[datetime, datetime],
                     step_minutes: int) -> LoadProfile:
+        """Build a regular UTC profile over a complete number of intervals."""
         start, end = period
         if type(step_minutes) is not int or step_minutes <= 0:
             raise ValidationError('Step must be a positive integer')
@@ -203,11 +227,16 @@ class Device(ABC):
 
 
 class FixedDevice(Device):
+    """A device that runs throughout the requested period."""
+
     def is_on(self, minute: int) -> bool:
+        """The fixed device remains on."""
         return True
 
 
 class CyclicDevice(Device):
+    """A shiftable cycle with one start and a fixed duration."""
+
     shiftable = True
 
     def __init__(self, device_id: str, power_kw: float, cycle_minutes: int,
@@ -217,11 +246,14 @@ class CyclicDevice(Device):
         self.start_minute = _check_minutes(start_minute, 'Start', allow_zero=True)
 
     def is_on(self, minute: int) -> bool:
+        """The cycle runs within its half-open start/duration window."""
         end = self.start_minute + self.cycle_minutes
         return self.start_minute <= minute < end
 
 
 class ThermostaticDevice(Device):
+    """A repeating on/off model with a fixed duty cycle."""
+
     def __init__(self, device_id: str, power_kw: float, duty_cycle: float,
                  cycle_minutes: int = 60) -> None:
         super().__init__(device_id, power_kw)
@@ -232,11 +264,14 @@ class ThermostaticDevice(Device):
         self.cycle_minutes = _check_minutes(cycle_minutes, 'Cycle')
 
     def is_on(self, minute: int) -> bool:
+        """Use the initial fraction of each thermostat cycle."""
         on_minutes = self.duty_cycle * self.cycle_minutes
         return minute % self.cycle_minutes < on_minutes
 
 
 class House:
+    """A meter and devices with distinct identifiers."""
+
     def __init__(self, house_id: str, meter: EnergyMeter,
                  devices: list[Device] | None = None) -> None:
         self.house_id = _check_id(house_id, 'House')
@@ -354,6 +389,8 @@ def tariff_from_config(tariff_id: str, registry: Mapping[str, Mapping[str, objec
 
 @dataclass(frozen=True)
 class ScheduledRun:
+    """One device start in UTC and a positive duration in minutes."""
+
     device_id: str
     start: datetime
     duration: int
@@ -366,18 +403,28 @@ class ScheduledRun:
         _check_minutes(self.duration, 'Duration')
 
 
+@dataclass(frozen=True, slots=True, init=False)
 class Schedule:
-    def __init__(self, runs: Iterable[ScheduledRun] = ()) -> None:
+    """Ordered runs whose device IDs belong to an explicit device registry."""
+
+    _runs: tuple[ScheduledRun, ...]
+
+    def __init__(self, runs: Iterable[ScheduledRun] = (),
+                 *, device_ids: Iterable[str] = ()) -> None:
+        known = frozenset(_check_id(value, 'Device') for value in device_ids)
         entries = tuple(runs)
         for run in entries:
             if not isinstance(run, ScheduledRun):
                 raise ValidationError('Schedule must contain ScheduledRun instances')
-        self._runs = tuple(sorted(entries, key=lambda r: (r.start, r.device_id)))
+            if run.device_id not in known:
+                raise ValidationError(f'Unknown device id: {run.device_id}')
+        ordered = tuple(sorted(entries, key=lambda r: (r.start, r.device_id)))
+        object.__setattr__(self, '_runs', ordered)
 
     def __len__(self) -> int:
         return len(self._runs)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[ScheduledRun]:
         return iter(self._runs)
 
     def __repr__(self) -> str:
@@ -386,6 +433,8 @@ class Schedule:
 
 @dataclass(frozen=True)
 class SavingsResult:
+    """Monetary comparison of baseline and optimized runs."""
+
     baseline_cost_uah: float
     optimized_cost_uah: float
     savings_uah: float
@@ -394,6 +443,8 @@ class SavingsResult:
 
 @dataclass(frozen=True)
 class OptimizationRequest:
+    """Inputs for a future scheduler; period boundaries are interval starts/ends."""
+
     house: House
     tariff: Tariff
     period: tuple[datetime, datetime]
@@ -402,5 +453,7 @@ class OptimizationRequest:
 
 @dataclass(frozen=True)
 class OptimizationResult:
+    """A completed schedule and its monetary comparison."""
+
     schedule: Schedule
     savings: SavingsResult

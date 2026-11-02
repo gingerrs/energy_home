@@ -13,3 +13,8 @@ dist/
 # Generated datasets (scripts/prepare_data.py)
 data/generated/
 data/raw/
+
+# OS files and unrelated frontend dependencies
+.DS_Store
+node_modules/
+.ruff_cache/
