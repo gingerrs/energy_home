@@ -21,6 +21,7 @@ from .domain import LoadProfile, MeterReading, Tariff
 
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
+    from pandas import DataFrame
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,3 +315,56 @@ def plot_device_stack(timestamps: Sequence[datetime],
     if output_path is not None:
         fig.savefig(output_path, bbox_inches='tight')
     return fig
+
+
+FRAME_COLUMNS = ('power_kw', 'energy_kwh', 'date', 'hour', 'day_of_week')
+
+
+def profile_to_dataframe(readings: Iterable[MeterReading | tuple[datetime, float]],
+                         step_minutes: int = 15, timezone_name: str = 'Europe/Kyiv',
+                         start: datetime | None = None,
+                         end: datetime | None = None) -> DataFrame:
+    """Convert observed intervals in [start, end) to a UTC-indexed DataFrame.
+
+    Rows keep the input order; date/hour/day_of_week (0 = Monday) are local to
+    `timezone_name`. Only the selected period is materialised; gaps stay absent.
+    """
+    import pandas as pd
+
+    step = getattr(readings, 'resolution_minutes', step_minutes)
+    if type(step) is not int or step <= 0:
+        raise ValueError('Step must be a positive integer')
+    rows = [(r.timestamp, r.power_kw) for r in _readings(readings)
+            if (start is None or r.timestamp >= start) and (end is None or r.timestamp < end)]
+    if any(t.utcoffset() is None for t, _ in rows):
+        raise ValueError('Timestamps must be timezone-aware')
+    index = pd.DatetimeIndex([t.astimezone(timezone.utc) for t, _ in rows],
+                             dtype='datetime64[ns, UTC]', name='timestamp')
+    if not index.is_monotonic_increasing or not index.is_unique:
+        raise ValueError('Timestamps must be unique and increasing')
+    power = pd.Series([p for _, p in rows], index=index, dtype='float64')
+    local = index.tz_convert(timezone_name)
+    return pd.DataFrame({'power_kw': power, 'energy_kwh': power * step / 60,
+                         'date': local.date, 'hour': local.hour,
+                         'day_of_week': local.dayofweek}, index=index)
+
+
+def dataframe_summary(frame: DataFrame, freq: str = 'D',
+                      timezone_name: str = 'Europe/Kyiv') -> DataFrame:
+    """Resample by local calendar periods: energy is summed, never averaged.
+
+    Empty bins inside the range stay visible with intervals = 0 (no filling).
+    """
+    grouped = frame.tz_convert(timezone_name).resample(freq)
+    power = grouped['power_kw']
+    return grouped['energy_kwh'].sum().to_frame().assign(
+        mean_power_kw=power.mean(), peak_kw=power.max(), intervals=power.count())
+
+
+def rolling_stats(frame: DataFrame, window: int,
+                  min_periods: int | None = None) -> DataFrame:
+    """Rolling mean and peak power over `window` observed intervals (rows)."""
+    if type(window) is not int or window <= 0:
+        raise ValueError('Window must be a positive integer')
+    rolling = frame['power_kw'].rolling(window, min_periods=min_periods or window)
+    return rolling.mean().to_frame('rolling_mean_kw').assign(rolling_peak_kw=rolling.max())
