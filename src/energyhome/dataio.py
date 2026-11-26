@@ -1,4 +1,8 @@
 import csv
+import gzip
+import json
+import zipfile
+import io
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -190,44 +194,50 @@ def iter_meter_csv(
 
 
 def _iter_meter_rows(
-    path: Path | str, cfg: SourceConfig, report: QualityReport,
+    path: Path | str,
+    cfg: SourceConfig,
+    report: QualityReport,
+    *,
+    zip_member: str | None = None,
 ) -> Iterator[MeterReading | RejectRecord]:
     """Читає сирі рядки, зберігаючи фізичні номери та помилки перетворення."""
     file_path = Path(path)
     if not file_path.is_file():
         raise DataImporterError(f"Файл не знайдено за шляхом: {file_path}")
     if cfg.power_unit not in _UNIT_TO_KW:
-        raise DataImporterError(
-            f"Невідома одиниця потужності: {cfg.power_unit}")
+        raise DataImporterError(f"Невідома одиниця потужності: {cfg.power_unit}")
     columns = (*cfg.timestamp_columns, cfg.power_column)
 
-    with file_path.open("r", encoding="utf-8", newline="") as f:
+    with _open_text_stream(file_path, zip_member=zip_member) as f:
         reader = csv.DictReader(f, delimiter=cfg.delimiter, strict=True)
         try:
             if reader.fieldnames is None:
                 raise DataImporterError("Рядок 1: порожній заголовок CSV")
             if len(set(reader.fieldnames)) != len(reader.fieldnames):
-                raise DataImporterError('Рядок 1: повторювані назви колонок')
+                raise DataImporterError("Рядок 1: повторювані назви колонок")
             if any(name not in reader.fieldnames for name in columns):
-                names = '/'.join(columns)
+                names = "/".join(columns)
                 raise DataImporterError(f"Рядок 1: відсутні колонки {names}")
             for row in reader:
                 report.line = reader.line_num - 1
                 try:
                     if None in row or any(row.get(c) is None for c in columns):
-                        raise ValueError('Missing field or extra CSV value')
+                        raise ValueError("Missing field or extra CSV value")
                     values = [row[c].strip() for c in columns]
                     if any(v in cfg.missing_values for v in values):
-                        raise ValueError('Missing value')
-                    ts = parse_timestamp(' '.join(values[:-1]),
-                                         cfg.timestamp_format, cfg.timezone)
+                        raise ValueError("Missing value")
+                    ts = parse_timestamp(
+                        " ".join(values[:-1]),
+                        cfg.timestamp_format,
+                        cfg.timezone,
+                    )
                     power = float(values[-1]) * _UNIT_TO_KW[cfg.power_unit]
                     reading = MeterReading(ts, power)
                 except (ValueError, TypeError) as error:
                     reading = RejectRecord(reader.line_num, str(error), dict(row))
                 yield reading
         except csv.Error as error:
-            message = f'Рядок {reader.reader.line_num}: Invalid CSV: {error}'
+            message = f"Рядок {reader.reader.line_num}: Invalid CSV: {error}"
             raise DataImporterError(message) from error
 
 
@@ -345,3 +355,142 @@ def generate_demo_consumption(
                    for minute, event in ((device.start_minute, 'on'),
                                          (device.start_minute + device.cycle_minutes, 'off')))
     return LoadProfile(base.timestamps, powers, 15), labels
+
+@dataclass(frozen=True)
+class ResampledBucket:
+    """Агрегований інтервал зі збереженням енергії та ознакою повноти покриття."""
+
+    start_utc: datetime
+    power_kw: float
+    energy_kwh: float
+    samples: int
+    expected_samples: int
+    complete: bool
+
+
+class _ZipTextWrapper(io.TextIOWrapper):
+    """Закриває текстовий потік, внутрішній потік члена та сам ZIP-архів."""
+
+    def __init__(self, raw_stream, archive: zipfile.ZipFile, inner_stream) -> None:
+        super().__init__(raw_stream, encoding="utf-8", newline="")
+        self._archive = archive
+        self._inner_stream = inner_stream
+
+    def close(self) -> None:
+        try:
+            super().close()
+        finally:
+            self._inner_stream.close()
+            self._archive.close()
+
+
+def _open_text_stream(file_path: Path, zip_member: str | None = None):
+    """Відкриває CSV, .gz або один файл із .zip як текстовий потік."""
+    suffix = file_path.suffix.lower()
+    if suffix == ".gz":
+        return gzip.open(file_path, mode="rt", encoding="utf-8", newline="")
+    if suffix == ".zip":
+        archive = zipfile.ZipFile(file_path, mode="r")
+        members = [name for name in archive.namelist() if not name.endswith("/")]
+        if zip_member is not None:
+            if zip_member not in members:
+                archive.close()
+                raise DataImporterError(f"Невідомий файл у ZIP-архіві: {zip_member}")
+            target = zip_member
+        else:
+            if len(members) != 1:
+                archive.close()
+                raise DataImporterError(
+                    f"ZIP має містити рівно один вхідний файл, знайдено: {len(members)}"
+                )
+            target = members[0]
+        raw_stream = archive.open(target, mode="r")
+        return _ZipTextWrapper(raw_stream, archive, raw_stream)
+    return file_path.open("r", encoding="utf-8", newline="")
+
+
+def resample_readings(
+    readings: Iterable[MeterReading],
+    step_in_minutes: int = 15,
+    step_out_minutes: int = 60,
+    *,
+    flush: bool = True,
+    carry_state: dict[str, object] | None = None,
+) -> Iterator[ResampledBucket]:
+    """Агрегує покази (kW) у вікна 15 або 60 хв зі збереженням енергії."""
+    if step_out_minutes not in (15, 60):
+        raise DataImporterError("step_out_minutes має бути 15 або 60")
+    if type(step_in_minutes) is not int or step_in_minutes <= 0:
+        raise DataImporterError("step_in_minutes має бути додатним цілим числом")
+    if step_out_minutes % step_in_minutes != 0:
+        raise DataImporterError("step_out_minutes має ділитися на step_in_minutes націло")
+
+    expected = step_out_minutes // step_in_minutes
+    dt_in_hours = step_in_minutes / 60.0
+    dt_out_hours = step_out_minutes / 60.0
+
+    state = carry_state if carry_state is not None else {}
+    cur_start: datetime | None = state.get("bucket_start")
+    energy_sum: float = float(state.get("energy_kwh", 0.0))
+    samples: int = int(state.get("samples", 0))
+
+    def _floor_bucket(ts: datetime) -> datetime:
+        ts_utc = ts.astimezone(UTC)
+        midnight = ts_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        elapsed_minutes = int((ts_utc - midnight).total_seconds() // 60)
+        floored_minutes = (elapsed_minutes // step_out_minutes) * step_out_minutes
+        return midnight + timedelta(minutes=floored_minutes)
+
+    def _emit(b_start: datetime, e_kwh: float, count: int) -> ResampledBucket:
+        return ResampledBucket(
+            start_utc=b_start,
+            power_kw=e_kwh / dt_out_hours,
+            energy_kwh=e_kwh,
+            samples=count,
+            expected_samples=expected,
+            complete=(count == expected),
+        )
+
+    for reading in readings:
+        b_start = _floor_bucket(reading.timestamp)
+        if cur_start is None:
+            cur_start = b_start
+        elif b_start != cur_start:
+            yield _emit(cur_start, energy_sum, samples)
+            cur_start = b_start
+            energy_sum = 0.0
+            samples = 0
+        energy_sum += reading.power_kw * dt_in_hours
+        samples += 1
+
+    if cur_start is not None:
+        if flush:
+            yield _emit(cur_start, energy_sum, samples)
+            state.clear()
+        else:
+            state["bucket_start"] = cur_start
+            state["energy_kwh"] = energy_sum
+            state["samples"] = samples
+
+
+def save_domain_json(path: Path | str, payload: dict[str, object]) -> Path:
+    """Зберігає доменний словник (схема А) у JSON без повторної доменної валідації."""
+    if not isinstance(payload, dict):
+        raise DataImporterError("Очікується словник доменних даних")
+    target = Path(path)
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return target
+
+
+def load_domain_json(path: Path | str) -> dict[str, object]:
+    """Завантажує доменний словник (схема А) з JSON без повторної доменної валідації."""
+    target = Path(path)
+    if not target.is_file():
+        raise DataImporterError(f"JSON-файл не знайдено: {target}")
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as err:
+        raise DataImporterError(f"Некоректний JSON у {target}: {err}") from err
+    if not isinstance(data, dict):
+        raise DataImporterError("Кореневий елемент JSON має бути об'єктом (dict)")
+    return data
