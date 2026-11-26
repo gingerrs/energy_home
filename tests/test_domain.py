@@ -3,8 +3,13 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from dataclasses import FrozenInstanceError
+import json
 
 from energyhome.domain import (
+    CyclicDevice,
+    FixedDevice,
+    Device,
+    House,
     DeviceError,
     EnergyError,
     LoadProfile,
@@ -19,6 +24,8 @@ from energyhome.domain import (
     SavingsResult,
     OptimizationRequest,
     ValidationError,
+    tariffs_from_dict,
+    tariffs_to_dict,
 )
 
 
@@ -186,3 +193,52 @@ class TestDomain(unittest.TestCase):
             step_minutes=15
         )
         self.assertEqual(req.step_minutes, 15)
+
+    def test_load_profile_addition_and_energy(self) -> None:
+        t0 = datetime(2026, 10, 5, 0, 0, tzinfo=timezone.utc)
+        grid = [t0, t0 + timedelta(minutes=30)]
+        p1 = LoadProfile(grid, [1.0, 2.0], 30)
+        p2 = LoadProfile(grid, [0.5, 1.5], 30)
+        combined = p1 + p2
+        self.assertEqual(combined.power_kw, [1.5, 3.5])
+        self.assertAlmostEqual(combined.energy_kwh(), 2.5)
+
+    def test_incompatible_profiles_and_device_comparison(self) -> None:
+        t0 = datetime(2026, 10, 5, 0, 0, tzinfo=timezone.utc)
+        p1 = LoadProfile([t0, t0 + timedelta(minutes=15)], [1.0, 1.0], 15)
+        p_diff_step = LoadProfile([t0, t0 + timedelta(minutes=30)], [1.0, 1.0], 30)
+        with self.assertRaises(ValidationError):
+            _ = p1 + p_diff_step
+
+        d1 = CyclicDevice('washer', 1.8, 60, start_minute=10)
+        d2 = CyclicDevice('washer', 1.8, 60, start_minute=10)
+        d_heavy = FixedDevice('heater', 2.5)
+        self.assertEqual(d1, d2)
+        self.assertLess(d1, d_heavy)
+
+    def test_json_roundtrip_and_strict_schema_validation(self) -> None:
+        house_raw = json.loads(Path('config/house.json').read_text(encoding='utf-8'))
+        house = House.from_dict(house_raw)
+        restored_house = House.from_dict(house.to_dict())
+        self.assertEqual(restored_house.house_id, 'demo-house-01')
+        self.assertEqual(restored_house.devices, house.devices)
+
+        tariffs_raw = json.loads(Path('config/tariffs.json').read_text(encoding='utf-8'))
+        tariffs = tariffs_from_dict(tariffs_raw)
+        restored_tariffs = tariffs_from_dict(tariffs_to_dict(tariffs))
+        self.assertEqual(set(restored_tariffs.keys()), {'single', 'two_zone', 'three_zone'})
+
+        t0 = datetime(2026, 10, 5, 1, 0, tzinfo=timezone.utc)
+        sched = Schedule([ScheduledRun('washer', t0, 60)], device_ids=['washer', 'router'])
+        restored_sched = Schedule.from_dict(sched.to_dict(device_ids=['washer', 'router']))
+        self.assertEqual(list(restored_sched), list(sched))
+
+        bad_version = house.to_dict()
+        bad_version['schema_version'] = 99
+        with self.assertRaises(ValidationError):
+            House.from_dict(bad_version)
+
+        bad_type = house.devices[0].to_dict()
+        bad_type['type'] = 'unknown_device'
+        with self.assertRaises(ValidationError):
+            Device.from_dict(bad_type)

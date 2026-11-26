@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "type": "house",
+  "synthetic": true,
+  "house_id": "demo-house-01",
+  "meter": {
+    "schema_version": 1,
+    "type": "energy_meter",
+    "meter_id": "meter-main",
+    "max_power_kw": 10.0
+  },
+  "devices": [
+    {
+      "schema_version": 1,
+      "type": "fixed",
+      "device_id": "router",
+      "power_kw": 0.05
+    },
+    {
+      "schema_version": 1,
+      "type": "cyclic",
+      "device_id": "washer",
+      "power_kw": 1.8,
+      "cycle_minutes": 90,
+      "start_minute": 60
+    },
+    {
+      "schema_version": 1,
+      "type": "thermostatic",
+      "device_id": "boiler",
+      "power_kw": 2.0,
+      "duty_cycle": 0.25,
+      "cycle_minutes": 60
+    }
+  ]
+}
