@@ -78,6 +78,19 @@ class LoadProfile:
     def __iter__(self) -> Iterator[tuple[datetime, float]]:
         return iter(zip(self.timestamps, self.power_kw))
 
+    def __add__(self, other: object) -> 'LoadProfile':
+        """Return element-wise sum of two profiles on an identical UTC grid."""
+        if not isinstance(other, LoadProfile):
+            return NotImplemented
+        if (self.resolution_minutes != other.resolution_minutes
+                or self.timestamps != other.timestamps):
+            raise ValidationError('Profiles must share the exact same timestamp grid and step')
+        return LoadProfile(
+            self.timestamps,
+            [a + b for a, b in zip(self.power_kw, other.power_kw)],
+            self.resolution_minutes,
+        )
+
     def __repr__(self) -> str:
         return f'LoadProfile(points={len(self)}, resolution_minutes={self.resolution_minutes})'
 
@@ -135,6 +148,15 @@ class Tariff(ABC):
 
         return calculate_cost(profile, self).total_cost
 
+    def to_dict(self) -> dict[str, object]:
+        """Serialize tariff entry matching tariffs.schema.json."""
+        raise NotImplementedError
+
+    @classmethod
+    def from_dict(cls, tariff_id: str, data: Mapping[str, object]) -> 'Tariff':
+        """Deserialize one tariff entry using tariff_from_config validation."""
+        return tariff_from_config(tariff_id, {tariff_id: data})
+
 
 class SingleZoneTariff(Tariff):
     """One nonnegative rate throughout the local day."""
@@ -158,6 +180,11 @@ class SingleZoneTariff(Tariff):
         self.rate_at(timestamp)
         return 'single'
 
+    def to_dict(self) -> dict[str, object]:
+        """Serialize single-zone tariff entry."""
+        return {'type': 'single', 'name': self.name,
+                'timezone_name': self.timezone_name, 'rate': self.rate}
+
 
 def _check_id(value: object, what: str) -> str:
     if not isinstance(value, str) or not value.strip():
@@ -179,6 +206,19 @@ def _check_minutes(value: int, what: str, allow_zero: bool = False) -> int:
         raise ValidationError(f'{what} must be a positive integer')
     return value
 
+SCHEMA_VERSION = 1
+
+
+def _parse_obj(data: object, expected_type: str, required: set[str],
+               optional: set[str] = frozenset()) -> Mapping[str, object]:
+    """Validate versioned object envelope and exact field set."""
+    if not isinstance(data, Mapping) or data.get('schema_version') != SCHEMA_VERSION:
+        raise ValidationError(f'Invalid or unsupported schema_version for {expected_type}')
+    if data.get('type') != expected_type:
+        raise ValidationError(f'Expected type {expected_type!r}')
+    if set(data.keys()) - optional != required | {'schema_version', 'type'}:
+        raise ValidationError(f'Invalid or missing fields for {expected_type}')
+    return data
 
 class EnergyMeter:
     """Grid connection point of a house with a power limit."""
@@ -186,6 +226,17 @@ class EnergyMeter:
     def __init__(self, meter_id: str, max_power_kw: float) -> None:
         self.meter_id = _check_id(meter_id, 'Meter')
         self.max_power_kw = _check_positive(max_power_kw, 'Power limit')
+
+    def to_dict(self) -> dict[str, object]:
+        """Serialize meter to a versioned dictionary."""
+        return {'schema_version': SCHEMA_VERSION, 'type': 'energy_meter',
+                'meter_id': self.meter_id, 'max_power_kw': self.max_power_kw}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, object]) -> 'EnergyMeter':
+        """Deserialize meter with strict schema and field validation."""
+        obj = _parse_obj(data, 'energy_meter', {'meter_id', 'max_power_kw'})
+        return cls(meter_id=obj['meter_id'], max_power_kw=obj['max_power_kw'])
 
 
 class Device(ABC):
@@ -225,6 +276,47 @@ class Device(ABC):
             [self.power_kw if self.is_on(m) else 0.0 for m in minutes],
             step_minutes)
 
+    def _key(self) -> tuple[object, ...]:
+        return (type(self), self.device_id, self.power_kw)
+
+    def __eq__(self, other: object) -> bool:
+        """Compare devices by class, identifier and configuration parameters."""
+        if not isinstance(other, Device):
+            return NotImplemented
+        return self._key() == other._key()
+
+    def __lt__(self, other: object) -> bool:
+        """Order devices by rated power ascending, then by device_id."""
+        if not isinstance(other, Device):
+            return NotImplemented
+        return (self.power_kw, self.device_id) < (other.power_kw, other.device_id)
+
+    @abstractmethod
+    def to_dict(self) -> dict[str, object]:
+        """Serialize device to a versioned dictionary."""
+        raise NotImplementedError
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, object]) -> 'Device':
+        """Deserialize a device subclass from a versioned dictionary."""
+        if not isinstance(data, Mapping):
+            raise ValidationError('Device payload must be a JSON object')
+        kind = data.get('type')
+        if kind == 'fixed':
+            obj = _parse_obj(data, 'fixed', {'device_id', 'power_kw'})
+            return FixedDevice(obj['device_id'], obj['power_kw'])
+        if kind == 'cyclic':
+            obj = _parse_obj(data, 'cyclic',
+                             {'device_id', 'power_kw', 'cycle_minutes', 'start_minute'})
+            return CyclicDevice(obj['device_id'], obj['power_kw'],
+                                obj['cycle_minutes'], obj['start_minute'])
+        if kind == 'thermostatic':
+            obj = _parse_obj(data, 'thermostatic',
+                             {'device_id', 'power_kw', 'duty_cycle', 'cycle_minutes'})
+            return ThermostaticDevice(obj['device_id'], obj['power_kw'],
+                                      obj['duty_cycle'], obj['cycle_minutes'])
+        raise ValidationError(f'Unknown device type: {kind!r}')
+
 
 class FixedDevice(Device):
     """A device that runs throughout the requested period."""
@@ -232,6 +324,11 @@ class FixedDevice(Device):
     def is_on(self, minute: int) -> bool:
         """The fixed device remains on."""
         return True
+
+    def to_dict(self) -> dict[str, object]:
+        """Serialize fixed device to a versioned dictionary."""
+        return {'schema_version': SCHEMA_VERSION, 'type': 'fixed',
+                'device_id': self.device_id, 'power_kw': self.power_kw}
 
 
 class CyclicDevice(Device):
@@ -249,6 +346,15 @@ class CyclicDevice(Device):
         """The cycle runs within its half-open start/duration window."""
         end = self.start_minute + self.cycle_minutes
         return self.start_minute <= minute < end
+
+    def to_dict(self) -> dict[str, object]:
+        """Serialize cyclic device to a versioned dictionary."""
+        return {'schema_version': SCHEMA_VERSION, 'type': 'cyclic', 'device_id': self.device_id,
+                'power_kw': self.power_kw, 'cycle_minutes': self.cycle_minutes,
+                'start_minute': self.start_minute}
+
+    def _key(self) -> tuple[object, ...]:
+        return (*super()._key(), self.cycle_minutes, self.start_minute)
 
 
 class ThermostaticDevice(Device):
@@ -268,6 +374,15 @@ class ThermostaticDevice(Device):
         on_minutes = self.duty_cycle * self.cycle_minutes
         return minute % self.cycle_minutes < on_minutes
 
+    def to_dict(self) -> dict[str, object]:
+        """Serialize thermostatic device to a versioned dictionary."""
+        return {'schema_version': SCHEMA_VERSION, 'type': 'thermostatic',
+                'device_id': self.device_id, 'power_kw': self.power_kw,
+                'duty_cycle': self.duty_cycle, 'cycle_minutes': self.cycle_minutes}
+
+    def _key(self) -> tuple[object, ...]:
+        return (*super()._key(), self.duty_cycle, self.cycle_minutes)
+
 
 class House:
     """A meter and devices with distinct identifiers."""
@@ -280,6 +395,20 @@ class House:
         ids = [d.device_id for d in self.devices]
         if len(ids) != len(set(ids)):
             raise ValidationError('Device ids must be unique')
+
+    def to_dict(self) -> dict[str, object]:
+        """Serialize house, its meter and devices to a versioned dictionary."""
+        return {'schema_version': SCHEMA_VERSION, 'type': 'house', 'house_id': self.house_id,
+                'meter': self.meter.to_dict(), 'devices': [d.to_dict() for d in self.devices]}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, object]) -> 'House':
+        """Deserialize house with strict validation of nested meter and devices."""
+        obj = _parse_obj(data, 'house', {'house_id', 'meter', 'devices'}, {'synthetic'})
+        if ('synthetic' in obj and type(obj['synthetic']) is not bool) or not isinstance(obj['devices'], list):
+            raise ValidationError('Invalid synthetic flag or devices list in House')
+        return cls(obj['house_id'], EnergyMeter.from_dict(obj['meter']),
+                   [Device.from_dict(d) for d in obj['devices']])
 
 
 class TariffValidationError(TariffError, ValidationError):
@@ -358,6 +487,13 @@ class _ZonedTariff(Tariff):
         """Return the zone rate in UAH/kWh, with no I/O, rounding or state changes."""
         return self._zone_at(timestamp).rate
 
+    def to_dict(self) -> dict[str, object]:
+        """Serialize zoned tariff entry."""
+        kind = 'two_zone' if isinstance(self, TwoZoneTariff) else 'three_zone'
+        zones = [{'zone_id': z.zone_id, 'start_minute': z.start_minute,
+                  'end_minute': z.end_minute, 'rate': z.rate} for z in self.zones]
+        return {'type': kind, 'name': self.name, 'timezone_name': self.timezone_name, 'zones': zones}
+
 
 class TwoZoneTariff(_ZonedTariff):
     """A fully covered local day with day/night zones and explicit rates."""
@@ -386,6 +522,23 @@ def tariff_from_config(tariff_id: str, registry: Mapping[str, Mapping[str, objec
         return tariff_type(tariff_id=tariff_id, **entry)
     except (KeyError, TypeError, ValueError, TariffError, OverflowError) as error:
         raise TariffValidationError(f'Invalid tariff {tariff_id!r}: {error}') from error
+
+def tariffs_to_dict(tariffs: Mapping[str, Tariff], *, synthetic: bool = True) -> dict[str, object]:
+    """Serialize a tariff registry matching tariffs.schema.json (schema_version=1)."""
+    return {'schema_version': SCHEMA_VERSION, 'synthetic': synthetic, 'currency': 'UAH',
+            'energy_unit': 'kWh', 'tariffs': {tid: t.to_dict() for tid, t in tariffs.items()}}
+
+
+def tariffs_from_dict(data: Mapping[str, object]) -> dict[str, Tariff]:
+    """Deserialize and strictly validate a tariff registry without silent defaults."""
+    req = {'schema_version', 'synthetic', 'currency', 'energy_unit', 'tariffs'}
+    if (not isinstance(data, Mapping) or data.get('schema_version') != SCHEMA_VERSION
+            or not req.issubset(data.keys()) or not set(data.keys()).issubset(req | {'$schema'})
+            or type(data['synthetic']) is not bool or data['currency'] != 'UAH'
+            or data['energy_unit'] != 'kWh' or not isinstance(data['tariffs'], Mapping)
+            or not data['tariffs']):
+        raise TariffValidationError('Invalid tariffs registry')
+    return {tid: tariff_from_config(tid, data['tariffs']) for tid in data['tariffs']}
 
 @dataclass(frozen=True)
 class ScheduledRun:
@@ -429,6 +582,34 @@ class Schedule:
 
     def __repr__(self) -> str:
         return f'Schedule(runs={len(self._runs)})'
+
+    def to_dict(self, device_ids: Iterable[str] | None = None) -> dict[str, object]:
+        """Serialize schedule and device registry to a versioned dictionary."""
+        known = sorted(set(device_ids) if device_ids is not None
+                       else {r.device_id for r in self._runs})
+        runs = [{'device_id': r.device_id, 'start': r.start.isoformat(),
+                 'duration': r.duration} for r in self._runs]
+        return {'schema_version': SCHEMA_VERSION, 'type': 'schedule',
+                'device_ids': known, 'runs': runs}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, object]) -> 'Schedule':
+        """Deserialize schedule with strict schema and ISO-8601 timestamp validation."""
+        obj = _parse_obj(data, 'schedule', {'device_ids', 'runs'})
+        if not isinstance(obj['device_ids'], list) or not isinstance(obj['runs'], list):
+            raise ValidationError('device_ids and runs must be lists')
+        runs: list[ScheduledRun] = []
+        for item in obj['runs']:
+            if (not isinstance(item, Mapping)
+                    or set(item.keys()) != {'device_id', 'start', 'duration'}
+                    or not isinstance(item['start'], str)):
+                raise ValidationError('Invalid ScheduledRun fields')
+            try:
+                start_dt = datetime.fromisoformat(item['start'])
+            except ValueError as err:
+                raise ValidationError('Invalid ISO timestamp in ScheduledRun') from err
+            runs.append(ScheduledRun(item['device_id'], start_dt, item['duration']))
+        return cls(runs, device_ids=obj['device_ids'])
 
 
 @dataclass(frozen=True)
